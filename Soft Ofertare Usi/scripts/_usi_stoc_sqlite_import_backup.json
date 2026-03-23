@@ -1,0 +1,682 @@
+[
+  {
+    "colectie": "ARTE LINE",
+    "model": "GEAM 1 / 3",
+    "pret": 87.0
+  },
+  {
+    "colectie": "ARTE LINE",
+    "model": "GEAM 1 / 4",
+    "pret": 92.0
+  },
+  {
+    "colectie": "ARTE LINE",
+    "model": "GEAM 2 / 4",
+    "pret": 104.0
+  },
+  {
+    "colectie": "ARTE LINE",
+    "model": "GEAM 3 / 4",
+    "pret": 98.0
+  },
+  {
+    "colectie": "ARTE LINE",
+    "model": "PLINA",
+    "pret": 61.0
+  },
+  {
+    "colectie": "AVENS LINE",
+    "model": "MODEL 1",
+    "pret": 113.0
+  },
+  {
+    "colectie": "AVENS LINE",
+    "model": "MODEL 2",
+    "pret": 113.0
+  },
+  {
+    "colectie": "AVENS LINE",
+    "model": "MODEL 3",
+    "pret": 113.0
+  },
+  {
+    "colectie": "AVENS LINE",
+    "model": "MODEL 4",
+    "pret": 113.0
+  },
+  {
+    "colectie": "CARENA LINE",
+    "model": "MODEL 1",
+    "pret": 113.0
+  },
+  {
+    "colectie": "CARENA LINE",
+    "model": "MODEL 2",
+    "pret": 113.0
+  },
+  {
+    "colectie": "CARENA LINE",
+    "model": "MODEL 3",
+    "pret": 113.0
+  },
+  {
+    "colectie": "CARENA LINE",
+    "model": "MODEL 4",
+    "pret": 113.0
+  },
+  {
+    "colectie": "CARENA LINE",
+    "model": "MODEL 5",
+    "pret": 113.0
+  },
+  {
+    "colectie": "CRYSTAL LINE",
+    "model": "MODEL 1",
+    "pret": 101.0
+  },
+  {
+    "colectie": "CRYSTAL LINE",
+    "model": "MODEL 2",
+    "pret": 101.0
+  },
+  {
+    "colectie": "CRYSTAL LINE",
+    "model": "MODEL 3",
+    "pret": 113.0
+  },
+  {
+    "colectie": "CRYSTAL LINE",
+    "model": "MODEL 4",
+    "pret": 113.0
+  },
+  {
+    "colectie": "CRYSTAL LINE",
+    "model": "MODEL 5",
+    "pret": 118.0
+  },
+  {
+    "colectie": "CRYSTAL LINE",
+    "model": "MODEL 6",
+    "pret": 101.0
+  },
+  {
+    "colectie": "CRYSTAL LINE",
+    "model": "MODEL 7",
+    "pret": 124.0
+  },
+  {
+    "colectie": "ESSENZA LINE",
+    "model": "MODEL 1",
+    "pret": 135.0
+  },
+  {
+    "colectie": "ESSENZA LINE",
+    "model": "MODEL 2",
+    "pret": 135.0
+  },
+  {
+    "colectie": "ESSENZA LINE",
+    "model": "MODEL 3",
+    "pret": 135.0
+  },
+  {
+    "colectie": "ESSENZA LINE",
+    "model": "MODEL 4",
+    "pret": 135.0
+  },
+  {
+    "colectie": "ESSENZA LINE",
+    "model": "MODEL 5",
+    "pret": 135.0
+  },
+  {
+    "colectie": "GALLA LINE",
+    "model": "MODEL 1",
+    "pret": 113.0
+  },
+  {
+    "colectie": "GALLA LINE",
+    "model": "MODEL 2",
+    "pret": 113.0
+  },
+  {
+    "colectie": "GALLA LINE",
+    "model": "MODEL 3",
+    "pret": 113.0
+  },
+  {
+    "colectie": "GALLA LINE",
+    "model": "MODEL 4",
+    "pret": 113.0
+  },
+  {
+    "colectie": "GENUA LINE",
+    "model": "MODEL 1",
+    "pret": 129.0
+  },
+  {
+    "colectie": "GENUA LINE",
+    "model": "MODEL 2",
+    "pret": 129.0
+  },
+  {
+    "colectie": "GENUA LINE",
+    "model": "MODEL 3",
+    "pret": 129.0
+  },
+  {
+    "colectie": "GENUA LINE",
+    "model": "MODEL 4",
+    "pret": 129.0
+  },
+  {
+    "colectie": "ISIS LINE",
+    "model": "MODEL 1",
+    "pret": 108.0
+  },
+  {
+    "colectie": "ISIS LINE",
+    "model": "MODEL 2",
+    "pret": 108.0
+  },
+  {
+    "colectie": "ISIS LINE",
+    "model": "MODEL 3",
+    "pret": 108.0
+  },
+  {
+    "colectie": "ISIS LINE",
+    "model": "MODEL 4",
+    "pret": 108.0
+  },
+  {
+    "colectie": "ISIS LINE",
+    "model": "MODEL 5",
+    "pret": 108.0
+  },
+  {
+    "colectie": "KARMA LINE",
+    "model": "MODEL 1.1",
+    "pret": 113.0
+  },
+  {
+    "colectie": "KARMA LINE",
+    "model": "MODEL 1.2",
+    "pret": 113.0
+  },
+  {
+    "colectie": "KARMA LINE",
+    "model": "MODEL 1.3",
+    "pret": 113.0
+  },
+  {
+    "colectie": "KARMA LINE",
+    "model": "MODEL 2.1",
+    "pret": 113.0
+  },
+  {
+    "colectie": "KARMA LINE",
+    "model": "MODEL 2.2",
+    "pret": 113.0
+  },
+  {
+    "colectie": "KARMA LINE",
+    "model": "MODEL 2.3",
+    "pret": 113.0
+  },
+  {
+    "colectie": "LARIA LINE",
+    "model": "MODEL 1",
+    "pret": 113.0
+  },
+  {
+    "colectie": "LARIA LINE",
+    "model": "MODEL 2",
+    "pret": 113.0
+  },
+  {
+    "colectie": "LARIA LINE",
+    "model": "MODEL 3",
+    "pret": 113.0
+  },
+  {
+    "colectie": "LARIA LINE",
+    "model": "MODEL 4",
+    "pret": 113.0
+  },
+  {
+    "colectie": "LEONA LINE",
+    "model": "MODEL 1",
+    "pret": 101.0
+  },
+  {
+    "colectie": "LEONA LINE",
+    "model": "MODEL 2",
+    "pret": 101.0
+  },
+  {
+    "colectie": "LEONA LINE",
+    "model": "MODEL 3",
+    "pret": 101.0
+  },
+  {
+    "colectie": "LEONA LINE",
+    "model": "MODEL 4",
+    "pret": 101.0
+  },
+  {
+    "colectie": "LEONA LINE",
+    "model": "MODEL 5",
+    "pret": 101.0
+  },
+  {
+    "colectie": "LEONA LINE",
+    "model": "MODEL 6",
+    "pret": 101.0
+  },
+  {
+    "colectie": "LEONA LINE",
+    "model": "MODEL 7",
+    "pret": 124.0
+  },
+  {
+    "colectie": "LEONA LINE",
+    "model": "MODEL 8",
+    "pret": 124.0
+  },
+  {
+    "colectie": "NATURA LINE",
+    "model": "MODEL 1",
+    "pret": 90.0
+  },
+  {
+    "colectie": "NATURA LINE",
+    "model": "MODEL 2",
+    "pret": 113.0
+  },
+  {
+    "colectie": "NATURA LINE",
+    "model": "MODEL 3",
+    "pret": 113.0
+  },
+  {
+    "colectie": "ORIA LINE",
+    "model": "MODEL 1",
+    "pret": 101.0
+  },
+  {
+    "colectie": "ORIA LINE",
+    "model": "MODEL 2",
+    "pret": 101.0
+  },
+  {
+    "colectie": "ORIA LINE",
+    "model": "MODEL 3",
+    "pret": 101.0
+  },
+  {
+    "colectie": "PASSIO LINE",
+    "model": "MODEL 1",
+    "pret": 117.0
+  },
+  {
+    "colectie": "PASSIO LINE",
+    "model": "MODEL 2",
+    "pret": 117.0
+  },
+  {
+    "colectie": "PASSIO LINE",
+    "model": "MODEL 3",
+    "pret": 117.0
+  },
+  {
+    "colectie": "PASSIO LINE",
+    "model": "MODEL 4",
+    "pret": 117.0
+  },
+  {
+    "colectie": "PIANA LINE",
+    "model": "MODEL 1",
+    "pret": 103.0
+  },
+  {
+    "colectie": "PIANA LINE",
+    "model": "MODEL 2",
+    "pret": 103.0
+  },
+  {
+    "colectie": "PIANA LINE",
+    "model": "MODEL 3",
+    "pret": 103.0
+  },
+  {
+    "colectie": "RENEA LINE",
+    "model": "MODEL GEAM",
+    "pret": 163.0
+  },
+  {
+    "colectie": "RENEA LINE",
+    "model": "MODEL PLINA",
+    "pret": 163.0
+  },
+  {
+    "colectie": "RIA LINE",
+    "model": "MODEL 1.1",
+    "pret": 101.0
+  },
+  {
+    "colectie": "RIA LINE",
+    "model": "MODEL 1.2",
+    "pret": 101.0
+  },
+  {
+    "colectie": "RIA LINE",
+    "model": "MODEL 2.1",
+    "pret": 101.0
+  },
+  {
+    "colectie": "RIA LINE",
+    "model": "MODEL 2.2",
+    "pret": 101.0
+  },
+  {
+    "colectie": "RIA LINE",
+    "model": "MODEL 2.3",
+    "pret": 101.0
+  },
+  {
+    "colectie": "SELECTA LINE",
+    "model": "MODEL GEAM 2/2",
+    "pret": 115.0
+  },
+  {
+    "colectie": "SELECTA LINE",
+    "model": "MODEL GEAM 3/3",
+    "pret": 115.0
+  },
+  {
+    "colectie": "SELECTA LINE",
+    "model": "MODEL PLINA 2/2",
+    "pret": 115.0
+  },
+  {
+    "colectie": "SELECTA LINE",
+    "model": "MODEL PLINA 3/3",
+    "pret": 115.0
+  },
+  {
+    "colectie": "SELENA LINE",
+    "model": "MODEL GEAM 2/5",
+    "pret": 103.0
+  },
+  {
+    "colectie": "SELENA LINE",
+    "model": "MODEL GEAM 3/5",
+    "pret": 103.0
+  },
+  {
+    "colectie": "SELENA LINE",
+    "model": "MODEL GEAM 4/4",
+    "pret": 103.0
+  },
+  {
+    "colectie": "SELENA LINE",
+    "model": "MODEL GEAM 5/5",
+    "pret": 103.0
+  },
+  {
+    "colectie": "SELENA LINE",
+    "model": "MODEL PLINA",
+    "pret": 103.0
+  },
+  {
+    "colectie": "SERINA LINE",
+    "model": "MODEL 1",
+    "pret": 124.0
+  },
+  {
+    "colectie": "SERINA LINE",
+    "model": "MODEL 2",
+    "pret": 111.0
+  },
+  {
+    "colectie": "SERINA LINE",
+    "model": "MODEL 3",
+    "pret": 111.0
+  },
+  {
+    "colectie": "SERINA LINE",
+    "model": "MODEL 4",
+    "pret": 129.0
+  },
+  {
+    "colectie": "SERINA LINE",
+    "model": "MODEL 5",
+    "pret": 113.0
+  },
+  {
+    "colectie": "SERINA LINE",
+    "model": "MODEL 6",
+    "pret": 124.0
+  },
+  {
+    "colectie": "SYRA LINE",
+    "model": "MODEL 1",
+    "pret": 135.0
+  },
+  {
+    "colectie": "SYRA LINE",
+    "model": "MODEL 2",
+    "pret": 135.0
+  },
+  {
+    "colectie": "SYRA LINE",
+    "model": "MODEL 3",
+    "pret": 129.0
+  },
+  {
+    "colectie": "SYRA LINE",
+    "model": "MODEL 4",
+    "pret": 129.0
+  },
+  {
+    "colectie": "SYRA LINE",
+    "model": "MODEL 5",
+    "pret": 152.0
+  },
+  {
+    "colectie": "SYRA LINE",
+    "model": "MODEL 6",
+    "pret": 129.0
+  },
+  {
+    "colectie": "TEMPO LINE",
+    "model": "MODEL 1",
+    "pret": 112.0
+  },
+  {
+    "colectie": "TEMPO LINE",
+    "model": "MODEL 2",
+    "pret": 112.0
+  },
+  {
+    "colectie": "TEMPO LINE",
+    "model": "MODEL 3",
+    "pret": 112.0
+  },
+  {
+    "colectie": "TERRA LINE",
+    "model": "MODEL GEAM 2/3",
+    "pret": 113.0
+  },
+  {
+    "colectie": "TERRA LINE",
+    "model": "MODEL GEAM 2/5",
+    "pret": 113.0
+  },
+  {
+    "colectie": "TERRA LINE",
+    "model": "MODEL GEAM 3/2",
+    "pret": 113.0
+  },
+  {
+    "colectie": "TERRA LINE",
+    "model": "MODEL GEAM 3/5",
+    "pret": 113.0
+  },
+  {
+    "colectie": "TERRA LINE",
+    "model": "MODEL GEAM 5/5",
+    "pret": 113.0
+  },
+  {
+    "colectie": "TERRA LINE",
+    "model": "MODEL PLINA",
+    "pret": 113.0
+  },
+  {
+    "colectie": "TREVISO LINE",
+    "model": "MODEL 1",
+    "pret": 113.0
+  },
+  {
+    "colectie": "TREVISO LINE",
+    "model": "MODEL 2",
+    "pret": 113.0
+  },
+  {
+    "colectie": "TREVISO LINE",
+    "model": "MODEL 3",
+    "pret": 113.0
+  },
+  {
+    "colectie": "TREVISO LINE",
+    "model": "MODEL 4",
+    "pret": 113.0
+  },
+  {
+    "colectie": "VELIS LINE",
+    "model": "MODEL 1",
+    "pret": 101.0
+  },
+  {
+    "colectie": "VELIS LINE",
+    "model": "MODEL 2",
+    "pret": 101.0
+  },
+  {
+    "colectie": "VELIS LINE",
+    "model": "MODEL 3",
+    "pret": 101.0
+  },
+  {
+    "colectie": "VENUS LINE",
+    "model": "MODEL 1",
+    "pret": 108.0
+  },
+  {
+    "colectie": "VENUS LINE",
+    "model": "MODEL 10",
+    "pret": 102.0
+  },
+  {
+    "colectie": "VENUS LINE",
+    "model": "MODEL 11",
+    "pret": 102.0
+  },
+  {
+    "colectie": "VENUS LINE",
+    "model": "MODEL 12",
+    "pret": 102.0
+  },
+  {
+    "colectie": "VENUS LINE",
+    "model": "MODEL 2",
+    "pret": 108.0
+  },
+  {
+    "colectie": "VENUS LINE",
+    "model": "MODEL 3",
+    "pret": 118.0
+  },
+  {
+    "colectie": "VENUS LINE",
+    "model": "MODEL 4",
+    "pret": 118.0
+  },
+  {
+    "colectie": "VENUS LINE",
+    "model": "MODEL 5",
+    "pret": 118.0
+  },
+  {
+    "colectie": "VENUS LINE",
+    "model": "MODEL 6",
+    "pret": 108.0
+  },
+  {
+    "colectie": "VENUS LINE",
+    "model": "MODEL 7",
+    "pret": 108.0
+  },
+  {
+    "colectie": "VENUS LINE",
+    "model": "MODEL 8",
+    "pret": 108.0
+  },
+  {
+    "colectie": "VENUS LINE",
+    "model": "MODEL 9",
+    "pret": 108.0
+  },
+  {
+    "colectie": "VERANO LINE",
+    "model": "MODEL GEAM 2/5",
+    "pret": 115.0
+  },
+  {
+    "colectie": "VERANO LINE",
+    "model": "MODEL GEAM 3/5",
+    "pret": 115.0
+  },
+  {
+    "colectie": "VERANO LINE",
+    "model": "MODEL GEAM 5/5",
+    "pret": 115.0
+  },
+  {
+    "colectie": "VERANO LINE",
+    "model": "MODEL GEAM 6/6",
+    "pret": 115.0
+  },
+  {
+    "colectie": "VERANO LINE",
+    "model": "MODEL PLINA",
+    "pret": 115.0
+  },
+  {
+    "colectie": "VERANO LINE",
+    "model": "MODEL PLINA 6/6",
+    "pret": 115.0
+  },
+  {
+    "colectie": "VICTORIA LINE",
+    "model": "MODEL 1",
+    "pret": 133.0
+  },
+  {
+    "colectie": "VINCIA LINE",
+    "model": "MODEL 1",
+    "pret": 124.0
+  },
+  {
+    "colectie": "VINCIA LINE",
+    "model": "MODEL 2",
+    "pret": 124.0
+  },
+  {
+    "colectie": "VINCIA LINE",
+    "model": "MODEL 3",
+    "pret": 124.0
+  }
+]

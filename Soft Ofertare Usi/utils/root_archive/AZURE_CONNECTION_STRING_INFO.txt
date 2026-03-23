@@ -1,0 +1,64 @@
+Soft Ofertare Usi - AZURE_SQL_CONN_STR (pentru toate PC-urile)
+
+-------------------------------------------------------------------
+1) Ce string trebuie setat pe fiecare PC
+-------------------------------------------------------------------
+Aplicația (Ofertare + Admin) citește connection string-ul din:
+    variabila de mediu: AZURE_SQL_CONN_STR
+
+Format (template din cod / documentație din proiect):
+    AZURE_SQL_CONN_STR=Driver={ODBC Driver 18 for SQL Server};
+                     Server=tcp:<nume_server>.database.windows.net,1433;
+                     Database=<nume_baza>;
+                     Uid=<user>;
+                     Pwd=<parola>;
+                     Encrypt=yes;
+                     TrustServerCertificate=no;
+                     Connection Timeout=30;
+
+Exemplu (FĂRĂ parolă în acest fișier; pune parola ta în variabila de mediu):
+    AZURE_SQL_CONN_STR=Driver={ODBC Driver 18 for SQL Server};Server=tcp:naturen-flow-server.database.windows.net,1433;Database=NaturenFlowDB;Uid=flowadmin;Pwd=<PAROLA>;Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;
+
+-------------------------------------------------------------------
+2) Cum setezi pe fiecare PC
+-------------------------------------------------------------------
+A) Setare pentru sesiunea curentă (PowerShell)
+   (funcționează doar cât timp e deschis acel PowerShell)
+
+   $env:AZURE_SQL_CONN_STR="Driver={ODBC Driver 18 for SQL Server};Server=tcp:<server>.database.windows.net,1433;Database:<baza>;Uid:<user>;Pwd:<parola>;Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
+
+   Apoi pornești:
+   - Ofertare: python run_ofertare.py
+   - Admin:    python admin_app.py
+
+B) Setare permanentă (recomandat pentru instalări .exe)
+   Important: dacă rulezi din setup (.exe), trebuie să fie permanentă,
+   nu doar în PowerShell.
+
+   1. Win + R -> scrii: sysdm.cpl -> Enter
+   2. Tab Avansat -> Variabile de mediu
+   3. Variabile utilizator (sau de sistem) -> Nou
+      - Nume variabilă: AZURE_SQL_CONN_STR
+      - Valoare: connection string-ul complet (cu Pwd=<parola>)
+   4. OK, OK
+   5. Repornește aplicația (sau delog/login).
+
+-------------------------------------------------------------------
+3) Verificare rapidă (pe PC-ul care dă eroare)
+-------------------------------------------------------------------
+1) Instalează (dacă rulezi din Python):
+      pip install pyodbc
+
+2) Rulează test conexiune (are retry și afișează eroarea reală):
+      python scripts/test_azure_connection.py
+
+3) Sau rulează test “complet”:
+      python scripts/verifica_azure_complet.py
+
+-------------------------------------------------------------------
+4) Notă despre parole / securitate
+-------------------------------------------------------------------
+Acest fișier NU salvează parola reală. Pentru securitate,
+parola trebuie introdusă în variabila de mediu AZURE_SQL_CONN_STR,
+nu în fișiere din repo / nu în cod.
+

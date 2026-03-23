@@ -1,0 +1,19 @@
+﻿Nume_Model,Finisaj,Tip_Accesoriu,Pret_Baza_Maner,Pret_Accesoriu,Pret_Total_Calculat
+Model Alpha,LC,OB,100.5,10.0,110.5
+Model Alpha,LC,PZ,100.5,20.0,120.5
+Model Alpha,LC,WC,100.5,30.0,130.5
+Model Alpha,SC,OB,100.5,10.0,110.5
+Model Alpha,SC,PZ,100.5,20.0,120.5
+Model Alpha,SC,WC,100.5,30.0,130.5
+Model Alpha,BK,OB,100.5,10.0,110.5
+Model Alpha,BK,PZ,100.5,20.0,120.5
+Model Alpha,BK,WC,100.5,30.0,130.5
+Model Alpha,LC,OB,200.0,5.0,205.0
+Model Alpha,LC,PZ,200.0,926.34,1126.34
+Model Alpha,LC,WC,200.0,40.0,240.0
+Model Alpha,SC,OB,200.0,5.0,205.0
+Model Alpha,SC,PZ,200.0,926.34,1126.34
+Model Alpha,SC,WC,200.0,40.0,240.0
+Model Beta,LC,OB,150.0,12.0,162.0
+Model Beta,LC,PZ,150.0,18.0,168.0
+Model Beta,LC,WC,150.0,22.0,172.0

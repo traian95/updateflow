@@ -1,0 +1,70 @@
+# =========================
+# Secrets
+# =========================
+.env
+.env.local
+*.env.local
+supabase_service_role.key
+
+# =========================
+# Python cache / virtual env
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# =========================
+# Build / release artifacts
+# =========================
+build/
+dist/
+release/
+installer/
+*.exe
+*.msi
+*.whl
+*.egg
+
+# =========================
+# Update temp/backup artifacts
+# =========================
+_update_temp/
+_update_backup/
+update.zip
+*.zip
+
+# =========================
+# Runtime generated files
+# =========================
+*.log
+*.db
+*.sqlite
+*.sqlite3
+*.pdf
+
+# =========================
+# Temporary directories/files
+# =========================
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.old
+*.orig
+~$*
+
+# =========================
+# OS / IDE
+# =========================
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

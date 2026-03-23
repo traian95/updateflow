@@ -1,0 +1,55 @@
+================================================================================
+  DE CE NU SE SINCRONIZEAZĂ CU AZURE – VERIFICARE PE FIECARE PC
+================================================================================
+
+Dacă Ofertare și Admin (instalate din setup) nu se conectează la Azure sau
+datele nu corespund între PC-uri, verifică pe FIECARE PC unde rulează softul:
+
+--------------------------------------------------------------------------------
+1. VARIABILĂ DE MEDIU AZURE_SQL_CONN_STR (OBLIGATORIU)
+--------------------------------------------------------------------------------
+   - Win + R → sysdm.cpl → Enter
+   - Tab "Avansat" → "Variabile de mediu"
+   - La "Variabile utilizator" sau "Variabile de sistem":
+     * Nume: AZURE_SQL_CONN_STR
+     * Valoare: același connection string pe TOATE PC-urile (din Azure Portal)
+   - Exemplu valoare (înlocuiești cu datele tale):
+     Driver={ODBC Driver 18 for SQL Server};Server=tcp:SERVER.database.windows.net,1433;Database=NaturenFlowDB;Uid=USER;Pwd=PAROLA;Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30
+   - După setare: închide și repornește Ofertare/Admin (sau delogare/logare Windows).
+
+   Dacă variabila lipsește, la "Sincronizează cu Azure" va apărea mesaj clar:
+   "Variabila de mediu AZURE_SQL_CONN_STR nu este setată pe acest PC."
+
+--------------------------------------------------------------------------------
+2. ODBC DRIVER 18 FOR SQL SERVER (OBLIGATORIU PE FIECARE PC)
+--------------------------------------------------------------------------------
+   - Descărcare: https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server
+   - Instalează pe fiecare PC unde rulează Ofertare sau Admin.
+   - Fără acest driver, conexiunea la Azure SQL eșuează.
+
+--------------------------------------------------------------------------------
+3. ACELAȘI CONNECTION STRING PE TOATE PC-URILE
+--------------------------------------------------------------------------------
+   - Server, Database, Uid, Pwd trebuie să fie IDENTICE pe PC-ul cu Ofertare
+     și pe PC-ul cu Admin (și pe orice alt PC unde instalezi softul).
+   - Dacă un PC are alt Server sau alt Database, datele nu se întâlnesc în Azure.
+
+--------------------------------------------------------------------------------
+4. FLUX NORMAL PENTRU SINCRONIZARE
+--------------------------------------------------------------------------------
+   - Pe PC-ul unde se fac ofertele (Ofertare):
+     * Creezi oferta, apoi apeși "Sincronizează cu Azure" → datele merg în Azure.
+   - Pe PC-ul unde folosești Admin:
+     * Apeși "Sincronizează cu Azure" → se descarcă din Azure (inclusiv ofertele
+       de pe alte PC-uri) și se actualizează baza locală.
+   - Fără apăsarea butonului, nu se trimite/nu se descarcă nimic.
+
+--------------------------------------------------------------------------------
+5. DACĂ PERSISTĂ PROBLEMA
+--------------------------------------------------------------------------------
+   - Verifică că baza Azure nu e "pauzată" (Azure Portal → SQL database → Resume).
+   - Verifică firewall/rețea: port 1433 către *.database.windows.net.
+   - Asigură-te că ai recompilat exe-urile după ultimele modificări (build_all.ps1)
+     și ai reinstalat setup-urile pe PC-uri.
+
+================================================================================

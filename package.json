@@ -1,0 +1,20 @@
+{
+  "name": "soft-ofertare-usi-scripts",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "rewrite-produse": "tsx scripts/rewrite_produse.ts",
+    "import-all": "tsx scripts/rewrite_produse.ts"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.47.10",
+    "better-sqlite3": "^11.7.0",
+    "dotenv": "^16.4.7"
+  }
+}

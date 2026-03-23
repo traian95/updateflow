@@ -1,0 +1,11 @@
+customtkinter
+CTkMessagebox
+ttkbootstrap
+pandas
+openpyxl
+Pillow
+fpdf
+requests
+supabase
+python-dotenv
+pyinstaller>=6.0
