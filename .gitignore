@@ -1,0 +1,6 @@
+# Local release staging (executables, installers); rebuild with scripts/build_release.bat
+v1.0.0 stabila/
+
+# PyInstaller output at repo root if present
+/dist/
+/build/

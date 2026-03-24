@@ -1,0 +1,5 @@
+# Streamlit Cloud — pip install list only (package names + optional versions).
+# Do NOT add paths like "Usi/requirements.txt" here; pip treats each line as a requirement spec.
+# To combine files, use a single "-r other.txt" line only if that file exists in the repo.
+
+streamlit>=1.28.0,<2

@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -28,6 +29,9 @@ APP_SLUG = "naturen_flow"
 UPDATE_ARCHIVE_NAME = "update.zip"
 VERSION_FILE_NAME = "version.json"
 UPDATE_LOG_FILE = "update-client.log"
+# External helper next to ofertare.exe (never "update.py" — that name is wrong).
+EXTERNAL_UPDATER_EXE_NAME = "updater.exe"
+EXTERNAL_UPDATER_SCRIPT_NAME = "updater.py"
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +72,17 @@ def _app_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent.parent
+
+
+def _user_download_dir_for_updates() -> Path:
+    """
+    Writable directory for the update archive (not under Program Files).
+    Prefer %LOCALAPPDATA%\\NaturenFlow\\updates\\; fallback %TEMP%\\NaturenFlow\\updates\\.
+    """
+    local = os.environ.get("LOCALAPPDATA", "").strip()
+    if local:
+        return (Path(local) / "NaturenFlow" / "updates").resolve()
+    return (Path(tempfile.gettempdir()) / "NaturenFlow" / "updates").resolve()
 
 
 def _update_log_path() -> Path:
@@ -300,12 +315,13 @@ def _python_command_for_updater_script() -> list[str]:
 
 
 def _launch_zip_updater(update_zip_path: Path, app_dir: Path, new_version: str) -> None:
-    updater_script = app_dir / "updater.py"
-    if not updater_script.exists():
-        raise FileNotFoundError(f"Nu exista scriptul extern: {updater_script}")
-
-    cmd = _python_command_for_updater_script() + [
-        str(updater_script),
+    """
+    Prefer packaged updater.exe (no Python on PATH). Fallback: updater.py + python/py -3.
+    Both must live in app_dir (same folder as ofertare.exe).
+    """
+    exe_path = (app_dir / EXTERNAL_UPDATER_EXE_NAME).resolve()
+    py_path = (app_dir / EXTERNAL_UPDATER_SCRIPT_NAME).resolve()
+    common_suffix = [
         "--zip-path",
         str(update_zip_path),
         "--target-dir",
@@ -315,6 +331,15 @@ def _launch_zip_updater(update_zip_path: Path, app_dir: Path, new_version: str) 
         "--restart-cmd",
         "|||".join(_restart_command_for_current_runtime()),
     ]
+    if exe_path.is_file():
+        cmd = [str(exe_path)] + common_suffix
+    elif py_path.is_file():
+        cmd = _python_command_for_updater_script() + [str(py_path)] + common_suffix
+    else:
+        raise FileNotFoundError(
+            f"External updater not found in {app_dir}: need {EXTERNAL_UPDATER_EXE_NAME} "
+            f"or {EXTERNAL_UPDATER_SCRIPT_NAME} next to the application executable."
+        )
 
     creation_flags = 0
     if hasattr(subprocess, "DETACHED_PROCESS"):
@@ -331,10 +356,17 @@ def install_zip_update(download_url: str, expected_sha256: str = "", new_version
     """
     try:
         app_dir = _app_dir()
-        zip_path = app_dir / UPDATE_ARCHIVE_NAME
+        download_dir = _user_download_dir_for_updates()
+        download_dir.mkdir(parents=True, exist_ok=True)
+        zip_path = download_dir / UPDATE_ARCHIVE_NAME
+        resolved_zip = zip_path.resolve()
+        logger.info("Update download path (writable): %s", resolved_zip)
+        _log_update(f"[download] writing update archive to: {resolved_zip}")
         _download_update_archive(download_url, zip_path)
         if not zip_path.exists():
-            raise FileNotFoundError(f"Arhiva update lipseste: {zip_path}")
+            raise FileNotFoundError(f"Arhiva update lipseste: {resolved_zip}")
+        logger.info("Update archive saved: %s", resolved_zip)
+        _log_update(f"[download] completed: {resolved_zip}")
         expected = str(expected_sha256 or "").strip().lower()
         if expected:
             got = _sha256_file(zip_path)
@@ -342,7 +374,7 @@ def install_zip_update(download_url: str, expected_sha256: str = "", new_version
                 raise RuntimeError("Verificarea SHA256 a esuat pentru update.zip.")
         version_to_write = str(new_version or "").strip() or get_local_version()
         _launch_zip_updater(zip_path, app_dir, version_to_write)
-        return {"ok": True, "zip_path": str(zip_path), "new_version": version_to_write}
+        return {"ok": True, "zip_path": str(resolved_zip), "new_version": version_to_write}
     except Exception as exc:
         _log_update(f"[ERROR] install_zip_update failed: {exc}")
         return {"ok": False, "error": str(exc)}
