@@ -840,12 +840,9 @@ def _render_parchet_calculator_window(cursor) -> None:
         st.session_state.parchet_calculator_open = False
         st.rerun()
 
-    pf = st.radio(
-        "Furnizor parchet",
-        ["Stoc", "Erkado"],
-        horizontal=True,
-        key="pc_furn",
-    )
+    _fg = (st.session_state.get("furnizor_global") or "Stoc").strip()
+    pf = _fg if _fg in ("Stoc", "Erkado") else "Stoc"
+    st.caption(f"Furnizor parchet = furnizor ofertă din catalog (**{pf}**).")
     cat = st.selectbox("Categorie parchet", CATEGORII_PARCHET, key="pc_cat")
     col_opts = get_colectii_produse(cursor, cat, pf, use_tip_toc=False)
     col_sel: str | None = None
@@ -917,7 +914,9 @@ def _render_parchet_calculator_window(cursor) -> None:
         else:
             st.caption("Introduceți suprafața (mp) pentru calcul complet.")
     elif col_sel and mod_sel:
-        st.warning("Nu s-au găsit dimensiune/preț pentru acest model (încercați alt furnizor sau cod).")
+        st.warning(
+            "Nu s-au găsit dimensiune/preț pentru acest model (schimbați furnizorul ofertei din catalog sau verificați codul)."
+        )
 
     if st.button("Adaugă parchet în ofertă", key="pc_add", type="primary"):
         if not col_sel or not mod_sel or not res or supf <= 0 or mp_per_cut <= 0 or pret_mp <= 0:
@@ -992,7 +991,6 @@ def render_configurator() -> None:
                 if not readonly:
                     st.caption("")
                     if st.button("PARCHET", key="btn_parchet_win", use_container_width=True, help="Calculator parchet (categorie, colecție, cod)"):
-                        st.session_state.pc_furn = st.session_state.furnizor_global
                         st.session_state.parchet_calculator_open = True
                         st.rerun()
             st.session_state.furnizor_global = fg
