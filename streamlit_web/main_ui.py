@@ -130,6 +130,14 @@ CONFIGURATOR_PAGE_CSS = """
         padding-top: 4.25rem !important;
         padding-bottom: 1.5rem !important;
     }
+    /* Carduri uniforme (Configurator — coloane principale) */
+    section.main [data-testid="column"] [data-testid="stVerticalBlockBorderWrapper"] {
+        border-radius: 8px !important;
+        border: 1px solid #424242 !important;
+        background: #252525 !important;
+        padding: 0.85rem 1rem 1rem 1rem !important;
+        margin-bottom: 1rem !important;
+    }
 </style>
 """
 
@@ -1025,9 +1033,9 @@ def render_configurator() -> None:
             unsafe_allow_html=True,
         )
 
-    tab_cfg, tab_cur, tab_adj = st.tabs(["Configurator ofertă", "Ofertă curentă", "Ajustări ofertă"])
+    left, right = st.columns([1, 1], gap="large")
 
-    with tab_cfg:
+    with left:
         show_parchet_win = bool(st.session_state.parchet_calculator_open) and not readonly
         if show_parchet_win:
             with st.container(border=True):
@@ -1060,8 +1068,7 @@ def render_configurator() -> None:
                             st.rerun()
                 st.session_state.furnizor_global = fg
                 st.session_state.safe_mode = st.toggle("Safe Mode", value=st.session_state.safe_mode)
-            # Fără border pe catalog: st.container(border=True) poate interfera cu expandere/selectoare
-            with st.container():
+            with st.container(border=True):
                 st.markdown('<p class="nf-card-title">Catalog produse</p>', unsafe_allow_html=True)
                 SERVICII = [
                     ("Scurtare set usa +toc", 11.0),
@@ -1103,7 +1110,18 @@ def render_configurator() -> None:
                 for titlu in cats:
                     render_category_block(cursor, titlu, st.session_state.furnizor_global, readonly)
 
-    with tab_cur:
+        with st.container(border=True):
+            st.markdown('<p class="nf-card-title">Setări document</p>', unsafe_allow_html=True)
+            st.session_state.mentiuni = st.text_area("Mentiuni", value=st.session_state.mentiuni)
+            st.session_state.afiseaza_mentiuni_pdf = st.checkbox(
+                "Afișează mentiunile în PDF", value=st.session_state.afiseaza_mentiuni_pdf
+            )
+            st.session_state.conditii_pdf = st.checkbox("Condiții (PDF)", value=st.session_state.conditii_pdf)
+            st.session_state.termen_livrare = st.text_input(
+                "Termen livrare (zile)", value=st.session_state.termen_livrare
+            )
+
+    with right:
         with st.container(border=True):
             st.markdown('<p class="nf-card-title">Ofertă curentă</p>', unsafe_allow_html=True)
             tab1, tab2 = st.tabs(["Produse în ofertă", "Rezumat ofertă"])
@@ -1150,7 +1168,6 @@ def render_configurator() -> None:
             if st.button("🔄 Reîmprospătare catalog", key="ref_cat"):
                 st.rerun()
 
-    with tab_adj:
         with st.container(border=True):
             st.markdown('<p class="nf-card-title">Ajustări ofertă</p>', unsafe_allow_html=True)
             disc_opts = sorted(set(["0"] + [str(x) for x in range(5, max_disc + 1, 5)] + [str(max_disc)]))
@@ -1189,21 +1206,12 @@ def render_configurator() -> None:
                 unsafe_allow_html=True,
             )
 
+        data_comanda_pdf = (st.session_state.data_oferta_curenta or "").strip() or (
+            f"{st.session_state.client['an']}-{st.session_state.client['luna']} {datetime.now().strftime('%H:%M')}"
+        )
+
         with st.container(border=True):
-            st.markdown('<p class="nf-card-title">Setări document și acțiuni</p>', unsafe_allow_html=True)
-            st.session_state.mentiuni = st.text_area("Mentiuni", value=st.session_state.mentiuni)
-            st.session_state.afiseaza_mentiuni_pdf = st.checkbox(
-                "Afișează mentiunile în PDF", value=st.session_state.afiseaza_mentiuni_pdf
-            )
-            st.session_state.conditii_pdf = st.checkbox("Condiții (PDF)", value=st.session_state.conditii_pdf)
-            st.session_state.termen_livrare = st.text_input(
-                "Termen livrare (zile)", value=st.session_state.termen_livrare
-            )
-
-            data_comanda_pdf = (st.session_state.data_oferta_curenta or "").strip() or (
-                f"{st.session_state.client['an']}-{st.session_state.client['luna']} {datetime.now().strftime('%H:%M')}"
-            )
-
+            st.markdown('<p class="nf-card-title">Acțiuni finale</p>', unsafe_allow_html=True)
             btn_save, btn_pdf = st.columns(2)
             with btn_save:
                 if not readonly:
