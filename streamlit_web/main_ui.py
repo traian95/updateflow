@@ -85,6 +85,35 @@ CORP_CSS = """
 </style>
 """
 
+# Taburi verticale în sidebar (similar meniului orizontal din desktop)
+SIDEBAR_NAV_CSS = """
+<style>
+    /* Radio ca „taburi” întunecate, colțuri rotunjite */
+    [data-testid="stSidebar"] div[role="radiogroup"] {
+        gap: 0.35rem;
+        flex-direction: column;
+    }
+    [data-testid="stSidebar"] div[role="radiogroup"] label {
+        display: flex !important;
+        align-items: center;
+        background: #2d2d2d !important;
+        border: 1px solid #5a5a5a !important;
+        border-radius: 4px !important;
+        padding: 0.55rem 0.75rem !important;
+        margin: 0 !important;
+        width: 100%;
+    }
+    [data-testid="stSidebar"] div[role="radiogroup"] label[data-baseweb="radio"] {
+        border-radius: 4px !important;
+    }
+    [data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked) {
+        border-color: #2e7d32 !important;
+        background: #1e3a24 !important;
+        box-shadow: inset 0 0 0 1px #43a047;
+    }
+</style>
+"""
+
 
 def _slug(titlu: str) -> str:
     return "".join(c if c.isalnum() else "_" for c in titlu)
@@ -189,10 +218,8 @@ def _init_state() -> None:
         st.session_state.conditii_pdf = False
     if "termen_livrare" not in st.session_state:
         st.session_state.termen_livrare = "0"
-    if "show_istoric" not in st.session_state:
-        st.session_state.show_istoric = False
-    if "show_cautare" not in st.session_state:
-        st.session_state.show_cautare = False
+    if "sidebar_view" not in st.session_state:
+        st.session_state.sidebar_view = "main"
 
 
 def _db():
@@ -332,6 +359,10 @@ def _add_toc_to_cos(
 
 
 def render_login() -> None:
+    st.markdown(
+        '<style>[data-testid="stSidebar"]{visibility:hidden;min-width:0!important;width:0!important;}</style>',
+        unsafe_allow_html=True,
+    )
     st.markdown(CORP_CSS, unsafe_allow_html=True)
     cfg = AppConfig()
     st.title("Naturen Flow")
@@ -345,6 +376,8 @@ def render_login() -> None:
         if r.get("ok"):
             st.session_state.logged_user = r["user"]
             st.session_state.page = "start"
+            st.session_state.sidebar_view = "main"
+            st.session_state["nav_radio"] = "Acasă"
             st.rerun()
         elif r.get("reason") == "not_approved":
             st.error("Contul nu a fost aprobat de administrator.")
@@ -356,7 +389,9 @@ def render_login() -> None:
             st.error("Utilizator sau parolă greșită.")
 
 
-def render_header() -> None:
+def render_sidebar_nav() -> None:
+    """Meniuri (ISTORIC, CĂUTARE, MOD DEV) în sidebar, ca taburi verticale."""
+    st.markdown(SIDEBAR_NAV_CSS, unsafe_allow_html=True)
     cfg = AppConfig()
     db = _db()
     priv = _privileges_tuple(st.session_state.logged_user, db.cursor, cfg)
@@ -365,90 +400,114 @@ def render_header() -> None:
     if callable(close_conn):
         close_conn()
 
-    c1, c2, c3, c4 = st.columns([2, 3, 2, 2])
-    with c1:
-        st.markdown("**Naturen Flow**")
-    with c2:
-        b1, b2 = st.columns(2)
-        if b1.button("ISTORIC"):
-            st.session_state.show_istoric = True
-        if b2.button("CĂUTARE CLIENȚI"):
-            st.session_state.show_cautare = True
-    with c3:
+    with st.sidebar:
+        st.markdown("### Naturen Flow")
+        st.caption("Navigare")
+        choice = st.radio(
+            "Meniu",
+            options=["Acasă", "Istoric", "Căutare clienți"],
+            key="nav_radio",
+            label_visibility="collapsed",
+        )
+        if choice == "Acasă":
+            st.session_state.sidebar_view = "main"
+        elif choice == "Istoric":
+            st.session_state.sidebar_view = "istoric"
+        else:
+            st.session_state.sidebar_view = "cautare"
+
         if can_dev:
-            if st.button("MOD DEV", type="secondary", key="hdr_dev"):
+            st.markdown("---")
+            if st.button("MOD DEV", use_container_width=True, type="secondary", key="sidebar_mod_dev"):
                 st.session_state.page = "dev_pw"
-    with c4:
+                st.rerun()
+
+        st.divider()
         st.caption(f"👤 {st.session_state.logged_user}")
-        if st.button("Ieșire"):
+        if st.button("Ieșire", use_container_width=True, key="sidebar_logout"):
             st.session_state.logged_user = ""
             st.session_state.page = "login"
             st.session_state.cos = []
             st.rerun()
 
 
+def _render_istoric_panel(db) -> None:
+    pk = st.session_state.page
+    st.markdown("## Istoric oferte")
+    q = st.text_input("Caută după nume client", key=f"istoric_q_{pk}")
+    uf = st.selectbox("Utilizator", ["(toți)"] + [st.session_state.logged_user], key=f"istoric_u_{pk}")
+    rows = get_istoric_oferte(
+        db.cursor,
+        f"%{q}%",
+        utilizator_creat=st.session_state.logged_user,
+        utilizator_filter=None if uf == "(toți)" else uf.replace("(toți)", "").strip() or None,
+    )
+    for rid, nume, total, data_o, detalii, avans, ucreate in rows[:80]:
+        with st.container():
+            st.write(f"**#{rid}** {nume} — {data_o} — {total:.2f} LEI — {ucreate}")
+            if st.button(f"Deschide #{rid}", key=f"opn_{pk}_{rid}"):
+                data = loads_offer_items(detalii) if detalii else []
+                items = data.get("items", []) if isinstance(data, dict) else data
+                st.session_state.cos = list(items or [])
+                st.session_state.readonly_offer = True
+                st.session_state.id_oferta_curenta = rid
+                st.session_state.data_oferta_curenta = data_o or ""
+                st.session_state.client["nume"] = nume or ""
+                st.session_state["nav_radio"] = "Acasă"
+                st.session_state.sidebar_view = "main"
+                st.session_state.page = "configurator"
+                st.rerun()
+
+
+def _render_cautare_panel(db) -> None:
+    pk = st.session_state.page
+    st.markdown("## Căutare clienți")
+    term = st.text_input("Nume", key=f"cl_q_{pk}")
+    interval = st.selectbox(
+        "Interval", ["Toate", "Ultima Săptămână", "Ultima Lună", "Ultimul An"], key=f"cl_int_{pk}"
+    )
+    data_min = None
+    if interval != "Toate":
+        zile = {"Ultima Săptămână": 7, "Ultima Lună": 30, "Ultimul An": 365}
+        data_min = (datetime.now() - timedelta(days=zile[interval])).strftime("%Y-%m-%d")
+    cli = get_clienti_with_oferte_count(
+        db.cursor, f"%{term}%", data_min, utilizator_creat=st.session_state.logged_user or None
+    )
+    for client_id, nume, adresa, tel, nr_o in cli[:100]:
+        st.write(f"**{nume}** — {tel} — oferte: {nr_o}")
+        if st.button("Detalii", key=f"det_{pk}_{client_id}"):
+            row = get_client_by_id(db.cursor, client_id)
+            if row:
+                st.session_state.client["nume"] = row[0]
+                st.session_state.client["tel"] = (row[1] or "").strip()
+                st.session_state.client["adresa"] = (row[2] or "").strip()
+                st.session_state.client["email"] = (row[3] or "").strip() if len(row) > 3 else ""
+            st.session_state["nav_radio"] = "Acasă"
+            st.session_state.sidebar_view = "main"
+            st.rerun()
+
+
 def render_start() -> None:
     _init_state()
     st.markdown(CORP_CSS, unsafe_allow_html=True)
-    render_header()
+    render_sidebar_nav()
     cfg = AppConfig()
     db = _db()
     priv = _privileges_tuple(st.session_state.logged_user, db.cursor, cfg)
     can_modify_curs = priv[0] == 1
 
-    if st.session_state.get("show_istoric"):
-        with st.expander("Istoric oferte", expanded=True):
-            q = st.text_input("Caută după nume client", key="istoric_q")
-            uf = st.selectbox("Utilizator", ["(toți)"] + [st.session_state.logged_user], key="istoric_u")
-            rows = get_istoric_oferte(
-                db.cursor,
-                f"%{q}%",
-                utilizator_creat=st.session_state.logged_user,
-                utilizator_filter=None if uf == "(toți)" else uf.replace("(toți)", "").strip() or None,
-            )
-            for rid, nume, total, data_o, detalii, avans, ucreate in rows[:80]:
-                with st.container():
-                    st.write(f"**#{rid}** {nume} — {data_o} — {total:.2f} LEI — {ucreate}")
-                    if st.button(f"Deschide #{rid}", key=f"opn_{rid}"):
-                        data = loads_offer_items(detalii) if detalii else []
-                        items = data.get("items", []) if isinstance(data, dict) else data
-                        st.session_state.cos = list(items or [])
-                        st.session_state.readonly_offer = True
-                        st.session_state.id_oferta_curenta = rid
-                        st.session_state.data_oferta_curenta = data_o or ""
-                        st.session_state.client["nume"] = nume or ""
-                        st.session_state.show_istoric = False
-                        st.session_state.page = "configurator"
-                        st.rerun()
-        if st.button("Închide istoric"):
-            st.session_state.show_istoric = False
-            st.rerun()
-
-    if st.session_state.get("show_cautare"):
-        with st.expander("Căutare clienți", expanded=True):
-            term = st.text_input("Nume", key="cl_q")
-            interval = st.selectbox("Interval", ["Toate", "Ultima Săptămână", "Ultima Lună", "Ultimul An"])
-            data_min = None
-            if interval != "Toate":
-                zile = {"Ultima Săptămână": 7, "Ultima Lună": 30, "Ultimul An": 365}
-                data_min = (datetime.now() - timedelta(days=zile[interval])).strftime("%Y-%m-%d")
-            cli = get_clienti_with_oferte_count(
-                db.cursor, f"%{term}%", data_min, utilizator_creat=st.session_state.logged_user or None
-            )
-            for client_id, nume, adresa, tel, nr_o in cli[:100]:
-                st.write(f"**{nume}** — {tel} — oferte: {nr_o}")
-                if st.button("Detalii", key=f"det_{client_id}"):
-                    row = get_client_by_id(db.cursor, client_id)
-                    if row:
-                        st.session_state.client["nume"] = row[0]
-                        st.session_state.client["tel"] = (row[1] or "").strip()
-                        st.session_state.client["adresa"] = (row[2] or "").strip()
-                        st.session_state.client["email"] = (row[3] or "").strip() if len(row) > 3 else ""
-                    st.session_state.show_cautare = False
-                    st.rerun()
-        if st.button("Închide căutare"):
-            st.session_state.show_cautare = False
-            st.rerun()
+    if st.session_state.sidebar_view == "istoric":
+        _render_istoric_panel(db)
+        close_conn = getattr(db.conn, "close", None)
+        if callable(close_conn):
+            close_conn()
+        return
+    if st.session_state.sidebar_view == "cautare":
+        _render_cautare_panel(db)
+        close_conn = getattr(db.conn, "close", None)
+        if callable(close_conn):
+            close_conn()
+        return
 
     close_conn = getattr(db.conn, "close", None)
     if callable(close_conn):
@@ -500,7 +559,8 @@ def render_start() -> None:
                 st.session_state.page = "configurator"
                 st.rerun()
         if st.button("CĂUTARE CLIENT", use_container_width=True):
-            st.session_state.show_cautare = True
+            st.session_state["nav_radio"] = "Căutare clienți"
+            st.session_state.sidebar_view = "cautare"
             st.rerun()
 
     with right:
@@ -835,7 +895,21 @@ def render_configurator() -> None:
     max_disc = max(0, min(50, int(priv[1] or 15)))
     readonly = st.session_state.readonly_offer
 
-    render_header()
+    render_sidebar_nav()
+
+    if st.session_state.sidebar_view == "istoric":
+        _render_istoric_panel(db)
+        close_conn = getattr(db.conn, "close", None)
+        if callable(close_conn):
+            close_conn()
+        return
+    if st.session_state.sidebar_view == "cautare":
+        _render_cautare_panel(db)
+        close_conn = getattr(db.conn, "close", None)
+        if callable(close_conn):
+            close_conn()
+        return
+
     st.markdown("## Configurator ofertă")
 
     if st.session_state.dev_mode:
@@ -1078,6 +1152,10 @@ def render_configurator() -> None:
 
 
 def render_dev_pw() -> None:
+    st.markdown(
+        '<style>[data-testid="stSidebar"]{visibility:hidden;min-width:0!important;width:0!important;}</style>',
+        unsafe_allow_html=True,
+    )
     st.title("Dev Mode")
     pw = st.text_input("Parola contului", type="password")
     if st.button("Continuă"):
@@ -1108,7 +1186,7 @@ def render_dev_pw() -> None:
 
 
 def run() -> None:
-    st.set_page_config(page_title="Naturen Flow", layout="wide", initial_sidebar_state="collapsed")
+    st.set_page_config(page_title="Naturen Flow", layout="wide", initial_sidebar_state="expanded")
     _init_state()
     p = st.session_state.page
     if p == "login":
