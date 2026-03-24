@@ -118,6 +118,21 @@ CORP_CSS = """
 </style>
 """
 
+# Doar în Configurator: conținut centrat + spațiu sus pentru logo (nu afectează login/start dacă nu e injectat acolo)
+CONFIGURATOR_PAGE_CSS = """
+<style>
+    section.main > div.block-container {
+        max-width: 1180px !important;
+        margin-left: auto !important;
+        margin-right: auto !important;
+        padding-left: clamp(0.75rem, 2.5vw, 2rem) !important;
+        padding-right: clamp(0.75rem, 2.5vw, 2rem) !important;
+        padding-top: 4.25rem !important;
+        padding-bottom: 1.5rem !important;
+    }
+</style>
+"""
+
 # Taburi verticale în sidebar (similar meniului orizontal din desktop)
 SIDEBAR_NAV_CSS = """
 <style>
@@ -655,7 +670,8 @@ def render_category_block(cursor, titlu: str, furnizor: str, readonly: bool) -> 
     ph_mod = "Alege Cod Produs" if is_parchet else "Alege Model"
     ph_dec = "Alege Finisaj" if titlu == "Tocuri" else "Alege Decor"
 
-    with st.expander(f"▾ {titlu}", expanded=False):
+    open_default = titlu in ("Usi Interior", "Usi intrare apartament", "Tocuri", "Manere")
+    with st.expander(f"▾ {titlu}", expanded=open_default):
         if titlu == "Manere":
             man_f = st.radio("Manere furnizor", ["Stoc", "Enger", "Erkado"], horizontal=True, key=f"man_f_{sl}")
         else:
@@ -978,6 +994,7 @@ def _render_parchet_calculator_window(cursor) -> None:
 def render_configurator() -> None:
     _init_state()
     st.markdown(CORP_CSS, unsafe_allow_html=True)
+    st.markdown(CONFIGURATOR_PAGE_CSS, unsafe_allow_html=True)
     cfg = AppConfig()
     db = _db()
     cursor = db.cursor
@@ -1014,7 +1031,7 @@ def render_configurator() -> None:
             unsafe_allow_html=True,
         )
 
-    left, right = st.columns([2, 3])
+    left, right = st.columns([11, 14])
 
     with left:
         show_parchet_win = bool(st.session_state.parchet_calculator_open) and not readonly
@@ -1049,7 +1066,8 @@ def render_configurator() -> None:
                             st.rerun()
                 st.session_state.furnizor_global = fg
                 st.session_state.safe_mode = st.toggle("Safe Mode", value=st.session_state.safe_mode)
-            with st.container(border=True):
+            # Fără border pe catalog: st.container(border=True) poate interfera cu expandere/selectoare
+            with st.container():
                 st.markdown('<p class="nf-card-title">Catalog produse</p>', unsafe_allow_html=True)
                 SERVICII = [
                     ("Scurtare set usa +toc", 11.0),
