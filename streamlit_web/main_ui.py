@@ -20,14 +20,12 @@ from ofertare.db import (
     get_client_by_name,
     get_client_id_by_name,
     get_clienti_with_oferte_count,
-    get_colectii_parchet,
     get_colectii_produse,
     get_decor_finisaj_pairs,
     get_istoric_oferte,
     get_manere_engs_finisaje,
     get_manere_engs_modele,
     get_manere_engs_pret_lei,
-    get_modele_parchet,
     get_modele_produse,
     get_offers_by_client,
     get_parchet_dimensiune_pret,
@@ -51,6 +49,7 @@ from ofertare.services import fetch_bnr_eur_rate
 
 from streamlit_web.offer_math import (
     compute_cart_totals,
+    estimate_parchet_line_lei_tva,
     get_furnizor_from_item,
     get_item_tip,
     parse_discount_percent,
@@ -220,6 +219,8 @@ def _init_state() -> None:
         st.session_state.termen_livrare = "0"
     if "sidebar_view" not in st.session_state:
         st.session_state.sidebar_view = "main"
+    if "parchet_calculator_open" not in st.session_state:
+        st.session_state.parchet_calculator_open = False
 
 
 def _db():
@@ -832,57 +833,113 @@ def render_category_block(cursor, titlu: str, furnizor: str, readonly: bool) -> 
             st.rerun()
 
 
-def render_parchet_popup(cursor, readonly: bool) -> None:
-    if readonly:
-        return
-    with st.expander("PARCHET (adăugare rapidă)", expanded=False):
-        cat = st.selectbox("Categorie parchet", CATEGORII_PARCHET, key="pp_cat")
-        col_opts = get_colectii_parchet(cursor, cat)
-        col = st.selectbox("Colectia", col_opts, key="pp_col")
-        mod_opts = get_modele_parchet(cursor, cat, col) if col else []
-        mod = st.selectbox("Cod Produs", mod_opts, key="pp_mod")
-        sup = st.text_input("Necesar client (mp)", key="pp_sup")
-        if st.button("Adaugă parchet în ofertă", key="pp_add"):
+def _render_parchet_calculator_window(cursor) -> None:
+    """Fereastră dedicată: categorie → colecție → model, calcul ca în catalog (MP/cut, EUR/mp), preview LEI ca în coș."""
+    st.markdown("### Calculator PARCHET")
+    if st.button("← Înapoi la catalog", key="pc_back"):
+        st.session_state.parchet_calculator_open = False
+        st.rerun()
+
+    pf = st.radio(
+        "Furnizor parchet",
+        ["Stoc", "Erkado"],
+        horizontal=True,
+        key="pc_furn",
+    )
+    cat = st.selectbox("Categorie parchet", CATEGORII_PARCHET, key="pc_cat")
+    col_opts = get_colectii_produse(cursor, cat, pf, use_tip_toc=False)
+    col_sel: str | None = None
+    if not col_opts:
+        st.warning("Nu există colecții pentru această categorie și furnizor.")
+    else:
+        col_sel = st.selectbox("Colectia", col_opts, key="pc_col")
+
+    mod_opts: list[str] = []
+    if col_sel:
+        mod_opts = get_modele_produse(cursor, cat, pf, col_sel, use_tip_toc=False)
+    mod_sel: str | None = None
+    if col_sel and mod_opts:
+        mod_sel = st.selectbox("Cod Produs", mod_opts, key="pc_mod")
+    elif col_sel and not mod_opts:
+        st.caption("Nu există modele pentru această colecție.")
+
+    st.text_input("Necesar client (mp)", key="pc_sup")
+
+    mp_per_cut = 0.0
+    pret_mp = 0.0
+    res = None
+    if col_sel and mod_sel:
+        mod_int = None
+        mod_float = None
+        try:
+            mod_int = str(int(float(mod_sel)))
+        except (ValueError, TypeError):
+            pass
+        try:
+            mod_float = str(float(mod_sel)) if "." not in str(mod_sel) else mod_sel
+        except (ValueError, TypeError):
+            pass
+        res = get_parchet_dimensiune_pret(cursor, cat, pf, col_sel, mod_sel, mod_int)
+        if not res and mod_float and mod_float != mod_sel:
+            res = get_parchet_dimensiune_pret(cursor, cat, pf, col_sel, mod_sel, mod_float)
+        if res:
             try:
-                supf = float((sup or "").replace(",", "."))
-            except ValueError:
-                supf = 0.0
-            mod_int = None
-            mod_float = None
-            try:
-                mod_int = str(int(float(mod)))
+                mp_per_cut = float(str(res[0] or "0").replace(",", "."))
             except (ValueError, TypeError):
-                pass
-            try:
-                mod_float = str(float(mod)) if "." not in str(mod) else mod
-            except (ValueError, TypeError):
-                pass
-            res = get_parchet_dimensiune_pret(cursor, cat, "Stoc", col, mod, mod_int)
-            if not res and mod_float:
-                res = get_parchet_dimensiune_pret(cursor, cat, "Stoc", col, mod, mod_float)
-            if not res or supf <= 0:
-                st.error("Date incomplete.")
-                return
-            mp_per_cut = float(str(res[0] or "0").replace(",", "."))
+                mp_per_cut = 0.0
             pret_mp = float(res[1] or 0)
             if mp_per_cut > 100:
                 mp_per_cut = 0.0
-            nr_cutii = math.ceil(supf / mp_per_cut) if mp_per_cut > 0 else 0
+
+    sup_raw = (st.session_state.get("pc_sup") or "").strip()
+    try:
+        supf = float(sup_raw.replace(",", "."))
+    except ValueError:
+        supf = 0.0
+
+    if mp_per_cut > 0 and pret_mp > 0:
+        st.caption(f"MP/cut: **{mp_per_cut}** | Preț EUR/mp (fără TVA): **{pret_mp:.2f}**")
+        if supf > 0:
+            nr_cutii = math.ceil(supf / mp_per_cut)
             total_mp = nr_cutii * mp_per_cut
             pret_total_eur = total_mp * pret_mp
-            nume = f"{cat} - Colectia {col} - Cod Produs {mod}"
-            st.session_state.cos.append(
-                {
-                    "nume": nume,
-                    "pret_eur": round(pret_total_eur, 2),
-                    "qty": 1,
-                    "tip": "parchet",
-                    "suprafata_mp": round(total_mp, 2),
-                    "nr_cutii": nr_cutii,
-                    "pret_per_mp": round(pret_mp, 2),
-                }
+            dproc = parse_discount_percent(st.session_state.discount)
+            lei_linie = estimate_parchet_line_lei_tva(
+                pret_total_eur,
+                discount_proc=dproc,
+                tva_procent=st.session_state.tva,
+                curs_euro=st.session_state.curs_euro,
             )
-            st.rerun()
+            st.info(
+                f"**{nr_cutii}** cutii → **{total_mp:.2f}** mp acoperit | **{pret_total_eur:.2f}** EUR (fără TVA)\n\n"
+                f"Estimativ linie (discount {dproc}%, TVA {st.session_state.tva}%, curs {st.session_state.curs_euro:.4f}): **{lei_linie:.2f} RON**"
+            )
+        else:
+            st.caption("Introduceți suprafața (mp) pentru calcul complet.")
+    elif col_sel and mod_sel:
+        st.warning("Nu s-au găsit dimensiune/preț pentru acest model (încercați alt furnizor sau cod).")
+
+    if st.button("Adaugă parchet în ofertă", key="pc_add", type="primary"):
+        if not col_sel or not mod_sel or not res or supf <= 0 or mp_per_cut <= 0 or pret_mp <= 0:
+            st.error("Completați categoria, colecția, codul și suprafața validă.")
+            return
+        nr_cutii = math.ceil(supf / mp_per_cut)
+        total_mp = nr_cutii * mp_per_cut
+        pret_total_eur = total_mp * pret_mp
+        nume = f"{cat} - Colectia {col_sel} - Cod Produs {mod_sel}"
+        st.session_state.cos.append(
+            {
+                "nume": nume,
+                "pret_eur": round(pret_total_eur, 2),
+                "qty": 1,
+                "tip": "parchet",
+                "suprafata_mp": round(total_mp, 2),
+                "nr_cutii": nr_cutii,
+                "pret_per_mp": round(pret_mp, 2),
+                "furnizor": pf,
+            }
+        )
+        st.rerun()
 
 
 def render_configurator() -> None:
@@ -918,55 +975,68 @@ def render_configurator() -> None:
     left, right = st.columns([1, 1])
 
     with left:
-        fg = st.radio(
-            "Alege furnizorul de ofertă:",
-            ["Stoc", "Erkado"],
-            horizontal=True,
-            index=0 if st.session_state.furnizor_global == "Stoc" else 1,
-            key="fglob",
-        )
-        st.session_state.furnizor_global = fg
+        show_parchet_win = bool(st.session_state.parchet_calculator_open) and not readonly
+        if show_parchet_win:
+            _render_parchet_calculator_window(cursor)
+        else:
+            row_top = st.columns([5, 1])
+            with row_top[0]:
+                fg = st.radio(
+                    "Alege furnizorul de ofertă:",
+                    ["Stoc", "Erkado"],
+                    horizontal=True,
+                    index=0 if st.session_state.furnizor_global == "Stoc" else 1,
+                    key="fglob",
+                )
+            with row_top[1]:
+                if not readonly:
+                    st.caption("")
+                    if st.button("PARCHET", key="btn_parchet_win", use_container_width=True, help="Calculator parchet (categorie, colecție, cod)"):
+                        st.session_state.pc_furn = st.session_state.furnizor_global
+                        st.session_state.parchet_calculator_open = True
+                        st.rerun()
+            st.session_state.furnizor_global = fg
         st.session_state.safe_mode = st.toggle("Safe Mode", value=st.session_state.safe_mode)
-        render_parchet_popup(cursor, readonly)
-        SERVICII = [
-            ("Scurtare set usa +toc", 11.0),
-            ("Redimensionare K", 52.0),
-            ("Redimensionare sus-jos", 52.0),
-        ]
-        with st.expander("▾ Servicii suplimentare (prețuri fixe, nu se aplică discount)", expanded=False):
-            for nume, pret in SERVICII:
-                if st.button(f"Adaugă — {nume} ({pret} €)", key=f"svc_{hash(nume)}"):
-                    st.session_state.cos.append(
-                        {
-                            "nume": nume,
-                            "pret_eur": pret,
-                            "qty": 1,
-                            "tip": "servicii_suplimentare",
-                            "fara_discount": True,
-                        }
-                    )
-                    st.rerun()
-        with st.expander("▾ Adaugă produs manual (uz general)", expanded=False):
-            mn = st.text_input("Denumire", key="man_n")
-            mq = st.text_input("Cantitate (buc)", key="man_q")
-            mp = st.text_input("Preț/unitate (€)", key="man_p")
-            if st.button("Adaugă în ofertă", key="man_add"):
-                try:
-                    qv = float((mq or "").replace(",", "."))
-                    pv = float((mp or "").replace(",", "."))
-                except ValueError:
-                    qv, pv = 0.0, 0.0
-                if not (mn or "").strip() or qv <= 0 or pv <= 0:
-                    st.error("Completează denumirea, cantitatea și prețul.")
-                else:
-                    st.session_state.cos.append(
-                        {"nume": mn.strip(), "pret_eur": round(pv, 2), "qty": qv, "tip": "produs_manual"}
-                    )
-                    st.rerun()
+        if not show_parchet_win:
+            SERVICII = [
+                ("Scurtare set usa +toc", 11.0),
+                ("Redimensionare K", 52.0),
+                ("Redimensionare sus-jos", 52.0),
+            ]
+            with st.expander("▾ Servicii suplimentare (prețuri fixe, nu se aplică discount)", expanded=False):
+                for nume, pret in SERVICII:
+                    if st.button(f"Adaugă — {nume} ({pret} €)", key=f"svc_{hash(nume)}"):
+                        st.session_state.cos.append(
+                            {
+                                "nume": nume,
+                                "pret_eur": pret,
+                                "qty": 1,
+                                "tip": "servicii_suplimentare",
+                                "fara_discount": True,
+                            }
+                        )
+                        st.rerun()
+            with st.expander("▾ Adaugă produs manual (uz general)", expanded=False):
+                mn = st.text_input("Denumire", key="man_n")
+                mq = st.text_input("Cantitate (buc)", key="man_q")
+                mp = st.text_input("Preț/unitate (€)", key="man_p")
+                if st.button("Adaugă în ofertă", key="man_add"):
+                    try:
+                        qv = float((mq or "").replace(",", "."))
+                        pv = float((mp or "").replace(",", "."))
+                    except ValueError:
+                        qv, pv = 0.0, 0.0
+                    if not (mn or "").strip() or qv <= 0 or pv <= 0:
+                        st.error("Completează denumirea, cantitatea și prețul.")
+                    else:
+                        st.session_state.cos.append(
+                            {"nume": mn.strip(), "pret_eur": round(pv, 2), "qty": qv, "tip": "produs_manual"}
+                        )
+                        st.rerun()
 
-        cats = _visible_categories(cursor)
-        for titlu in cats:
-            render_category_block(cursor, titlu, st.session_state.furnizor_global, readonly)
+            cats = _visible_categories(cursor)
+            for titlu in cats:
+                render_category_block(cursor, titlu, st.session_state.furnizor_global, readonly)
 
     with right:
         tab1, tab2 = st.tabs(["Produse în ofertă", "Rezumat ofertă"])
@@ -1147,6 +1217,7 @@ def render_configurator() -> None:
         close_conn()
 
     if st.button("Înapoi la ecran start"):
+        st.session_state.parchet_calculator_open = False
         st.session_state.page = "start"
         st.rerun()
 

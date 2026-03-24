@@ -25,6 +25,21 @@ def parse_discount_percent(raw: str | int | float | None) -> int:
     return int(round(max(0.0, min(50.0, v))))
 
 
+def estimate_parchet_line_lei_tva(
+    pret_total_eur: float,
+    *,
+    discount_proc: int,
+    tva_procent: float,
+    curs_euro: float,
+) -> float:
+    """Estimativ LEI (TVA inclus) pentru o linie parchet în EUR — aceeași regulă ca în coș (discount + TVA + curs)."""
+    disc = max(0, min(50, int(discount_proc)))
+    return round(
+        float(pret_total_eur) * (1 - disc / 100) * (1 + float(tva_procent) / 100) * float(curs_euro),
+        2,
+    )
+
+
 def compute_cart_totals(
     cos: list[dict[str, Any]],
     *,
