@@ -135,17 +135,51 @@ CONFIGURATOR_PAGE_CSS = """
         max-height: 100vh !important;
         box-sizing: border-box !important;
     }
-    /* Rândul principal cu 3 coloane: înălțime limitată, scroll intern */
+    /* Rândul principal cu 3 coloane: lățimi fixe (aprox. ca marcaj), înălțime limitată, scroll intern */
     section.main div[data-testid="stHorizontalBlock"]:has(> div[data-testid="column"]:nth-child(3)) {
         align-items: stretch !important;
+        flex-wrap: nowrap !important;
         max-height: calc(100vh - 5.5rem) !important;
         min-height: min(560px, calc(100vh - 5.5rem)) !important;
     }
-    section.main div[data-testid="stHorizontalBlock"]:has(> div[data-testid="column"]:nth-child(3)) > div[data-testid="column"] {
+    /* Coloane principale: stânga ~config, mijloc ~ofertă (mai lat), dreapta ~ajustări/rezumat */
+    section.main div[data-testid="stHorizontalBlock"]:has(> div[data-testid="column"]:nth-child(3)) > div[data-testid="column"]:nth-child(1) {
+        flex: 0 0 300px !important;
+        width: 300px !important;
+        min-width: 260px !important;
+        max-width: 320px !important;
         max-height: calc(100vh - 5.5rem) !important;
         overflow-y: auto !important;
         overflow-x: hidden !important;
         padding-right: 2px !important;
+    }
+    section.main div[data-testid="stHorizontalBlock"]:has(> div[data-testid="column"]:nth-child(3)) > div[data-testid="column"]:nth-child(2) {
+        flex: 1 1 520px !important;
+        min-width: 380px !important;
+        max-width: none !important;
+        max-height: calc(100vh - 5.5rem) !important;
+        overflow-y: auto !important;
+        overflow-x: hidden !important;
+        padding-right: 2px !important;
+    }
+    section.main div[data-testid="stHorizontalBlock"]:has(> div[data-testid="column"]:nth-child(3)) > div[data-testid="column"]:nth-child(3) {
+        flex: 0 0 330px !important;
+        width: 330px !important;
+        min-width: 280px !important;
+        max-width: 380px !important;
+        max-height: calc(100vh - 5.5rem) !important;
+        overflow-y: auto !important;
+        overflow-x: hidden !important;
+        padding-right: 2px !important;
+    }
+    /* Rânduri cu 3 coloane în interiorul listei de produse (nu le forțăm la aceleași px) */
+    section.main [data-testid="column"] div[data-testid="stHorizontalBlock"]:has(> div[data-testid="column"]:nth-child(3)) > div[data-testid="column"] {
+        flex: 1 1 0% !important;
+        min-width: 0 !important;
+        max-width: none !important;
+        width: auto !important;
+        max-height: none !important;
+        overflow: visible !important;
     }
     /* Carduri uniforme (Configurator) */
     section.main [data-testid="column"] [data-testid="stVerticalBlockBorderWrapper"] {
@@ -1064,7 +1098,7 @@ def render_configurator() -> None:
 
     disc_opts = sorted(set(["0"] + [str(x) for x in range(5, max_disc + 1, 5)] + [str(max_disc)]))
 
-    left, mid, right = st.columns([1, 1.2, 1], gap="medium")
+    left, mid, right = st.columns([300, 560, 330], gap="small")
 
     with left:
         show_parchet_win = bool(st.session_state.parchet_calculator_open) and not readonly
