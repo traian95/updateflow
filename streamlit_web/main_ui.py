@@ -138,6 +138,15 @@ CONFIGURATOR_PAGE_CSS = """
         padding: 0.85rem 1rem 1rem 1rem !important;
         margin-bottom: 1rem !important;
     }
+    /* Taburi (ex. Produse / Rezumat): centrate, lățime ~50% din zona principală */
+    section.main [data-testid="stTabs"] [data-baseweb="tab-list"],
+    section.main [data-testid="stTabs"] [role="tablist"] {
+        width: 50% !important;
+        max-width: min(50vw, 560px) !important;
+        margin-left: auto !important;
+        margin-right: auto !important;
+        justify-content: center !important;
+    }
 </style>
 """
 
