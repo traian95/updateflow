@@ -8,7 +8,7 @@ import math
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import streamlit as st
 
@@ -147,34 +147,24 @@ CONFIGURATOR_PAGE_CSS = """
     section.main [data-testid="stTabs"] { margin-top: 0 !important; }
     section.main [data-testid="stTabs"] [role="tablist"] { min-height: 2.1rem !important; gap: 0.25rem !important; }
     section.main [data-testid="stTabs"] button { padding: 0.2rem 0.5rem !important; font-size: 0.82rem !important; }
-    /* Grilă 3 coloane ~36% / 36% / 28% — fără scroll pe pagină, scroll în coloană */
-    section.main div[data-testid="stHorizontalBlock"]:has(> div[data-testid="column"]:nth-child(3)) {
+    /* Grilă principală: 2 coloane (ofertă | ajustări/setări) — config e în sidebar */
+    section.main > div.block-container div[data-testid="stVerticalBlock"] > div > div[data-testid="stHorizontalBlock"]:first-of-type {
         align-items: stretch !important;
         flex-wrap: nowrap !important;
         max-height: calc(100vh - 4.75rem) !important;
         min-height: 0 !important;
     }
-    section.main div[data-testid="stHorizontalBlock"]:has(> div[data-testid="column"]:nth-child(3)) > div[data-testid="column"]:nth-child(1) {
-        flex: 0 1 36% !important;
-        min-width: 240px !important;
-        max-width: 40% !important;
+    section.main > div.block-container div[data-testid="stVerticalBlock"] > div > div[data-testid="stHorizontalBlock"]:first-of-type > div[data-testid="column"]:nth-child(1) {
+        flex: 1 1 56% !important;
+        min-width: 0 !important;
         max-height: calc(100vh - 4.75rem) !important;
         overflow-y: auto !important;
         overflow-x: hidden !important;
         padding-right: 2px !important;
     }
-    section.main div[data-testid="stHorizontalBlock"]:has(> div[data-testid="column"]:nth-child(3)) > div[data-testid="column"]:nth-child(2) {
-        flex: 1 1 36% !important;
-        min-width: 280px !important;
-        max-height: calc(100vh - 4.75rem) !important;
-        overflow-y: auto !important;
-        overflow-x: hidden !important;
-        padding-right: 2px !important;
-    }
-    section.main div[data-testid="stHorizontalBlock"]:has(> div[data-testid="column"]:nth-child(3)) > div[data-testid="column"]:nth-child(3) {
-        flex: 0 1 28% !important;
-        min-width: 220px !important;
-        max-width: 32% !important;
+    section.main > div.block-container div[data-testid="stVerticalBlock"] > div > div[data-testid="stHorizontalBlock"]:first-of-type > div[data-testid="column"]:nth-child(2) {
+        flex: 1 1 44% !important;
+        min-width: 0 !important;
         max-height: calc(100vh - 4.75rem) !important;
         overflow-y: auto !important;
         overflow-x: hidden !important;
@@ -185,6 +175,12 @@ CONFIGURATOR_PAGE_CSS = """
         min-width: 0 !important;
         max-width: none !important;
         width: auto !important;
+        max-height: none !important;
+        overflow: visible !important;
+    }
+    section.main [data-testid="column"] div[data-testid="stHorizontalBlock"]:has(> div[data-testid="column"]:nth-child(2):last-child) > div[data-testid="column"] {
+        flex: 1 1 0% !important;
+        min-width: 0 !important;
         max-height: none !important;
         overflow: visible !important;
     }
@@ -239,6 +235,36 @@ SIDEBAR_NAV_CSS = """
         border-color: #2e7d32 !important;
         background: #1e3a24 !important;
         box-shadow: inset 0 0 0 1px #43a047;
+    }
+</style>
+"""
+
+# Panou configurare + catalog în sidebar (lipit de meniul de navigare)
+SIDEBAR_CONFIG_PANEL_CSS = """
+<style>
+    [data-testid="stSidebar"] {
+        overflow-y: auto !important;
+        max-height: 100vh !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {
+        border-radius: 6px !important;
+        border: 1px solid #424242 !important;
+        background: #252525 !important;
+        padding: 0.4rem 0.5rem 0.45rem 0.5rem !important;
+        margin-bottom: 0.35rem !important;
+    }
+    [data-testid="stSidebar"] .nf-card-title {
+        font-size: 0.7rem !important;
+        margin: -2px 0 5px 0 !important;
+        padding-bottom: 3px !important;
+    }
+    [data-testid="stSidebar"] .nf-sidebar-config-header {
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+        margin: 0.15rem 0 0.35rem 0;
+        padding-top: 0.25rem;
+        border-top: 1px solid #3d3d3d;
     }
 </style>
 """
@@ -353,6 +379,8 @@ def _init_state() -> None:
         st.session_state.parchet_calculator_open = False
     if "configurator_right_panel" not in st.session_state:
         st.session_state.configurator_right_panel = "ajustari"
+    if "nf_config_sidebar_folded" not in st.session_state:
+        st.session_state.nf_config_sidebar_folded = False
 
 
 def _db():
@@ -522,8 +550,9 @@ def render_login() -> None:
             st.error("Utilizator sau parolă greșită.")
 
 
-def render_sidebar_nav() -> None:
-    """Meniuri (ISTORIC, CĂUTARE, MOD DEV) în sidebar, ca taburi verticale."""
+def render_sidebar_nav(configurator_extras: Callable[[], None] | None = None) -> None:
+    """Meniuri (ISTORIC, CĂUTARE, MOD DEV) în sidebar, ca taburi verticale.
+    Opțional: `configurator_extras` — randat imediat după meniu (ex. panou configurare + catalog)."""
     st.markdown(SIDEBAR_NAV_CSS, unsafe_allow_html=True)
     cfg = AppConfig()
     db = _db()
@@ -550,6 +579,9 @@ def render_sidebar_nav() -> None:
             st.session_state.sidebar_view = "istoric"
         else:
             st.session_state.sidebar_view = "cautare"
+
+        if configurator_extras is not None:
+            configurator_extras()
 
         if can_dev:
             st.markdown("---")
@@ -1076,6 +1108,109 @@ def _render_parchet_calculator_window(cursor) -> None:
         st.rerun()
 
 
+def _render_configurator_sidebar_configuration(cursor, readonly: bool) -> None:
+    """Configurare + catalog în sidebar, lipit de meniul de navigare; fold/unfold."""
+    if st.session_state.get("nf_config_sidebar_folded"):
+        if st.button("» Deschide configurare", key="nf_unfold_cfg", use_container_width=True, help="Deschide panoul de configurare și catalog"):
+            st.session_state.nf_config_sidebar_folded = False
+            st.rerun()
+        return
+
+    fh1, fh2 = st.columns([1, 4])
+    with fh1:
+        if st.button("«", key="nf_fold_cfg", help="Restrânge panoul de configurare (fold)"):
+            st.session_state.nf_config_sidebar_folded = True
+            st.rerun()
+    with fh2:
+        st.caption("Catalog · furnizor")
+
+    if st.session_state.dev_mode:
+        st.markdown(
+            '<div class="nf-page-head" style="margin-bottom:0.25rem;">'
+            '<span class="nf-dev-pill">Mod Dev — fără validare client.</span>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
+    show_parchet_win = bool(st.session_state.parchet_calculator_open) and not readonly
+    if show_parchet_win:
+        with st.container(border=True):
+            st.markdown('<p class="nf-card-title">Configurare</p>', unsafe_allow_html=True)
+            st.session_state.safe_mode = st.toggle("Safe Mode", value=st.session_state.safe_mode)
+        with st.container(border=True):
+            _render_parchet_calculator_window(cursor)
+    else:
+        with st.container(border=True):
+            st.markdown('<p class="nf-card-title">Configurare</p>', unsafe_allow_html=True)
+            row_top = st.columns([5, 1])
+            with row_top[0]:
+                fg = st.radio(
+                    "Alege furnizorul de ofertă:",
+                    ["Stoc", "Erkado"],
+                    horizontal=True,
+                    index=0 if st.session_state.furnizor_global == "Stoc" else 1,
+                    key="fglob",
+                )
+            with row_top[1]:
+                if not readonly:
+                    st.caption("")
+                    if st.button(
+                        "PARCHET",
+                        key="btn_parchet_win",
+                        use_container_width=True,
+                        help="Calculator parchet (categorie, colecție, cod)",
+                    ):
+                        st.session_state.parchet_calculator_open = True
+                        st.rerun()
+            st.session_state.furnizor_global = fg
+            st.session_state.safe_mode = st.toggle("Safe Mode", value=st.session_state.safe_mode)
+        with st.container(border=True):
+            st.markdown('<p class="nf-card-title">Catalog produse</p>', unsafe_allow_html=True)
+            SERVICII = [
+                ("Scurtare set usa +toc", 11.0),
+                ("Redimensionare K", 52.0),
+                ("Redimensionare sus-jos", 52.0),
+            ]
+            with st.expander("▾ Servicii suplimentare (prețuri fixe, nu se aplică discount)", expanded=False):
+                for nume, pret in SERVICII:
+                    if st.button(f"Adaugă — {nume} ({pret} €)", key=f"svc_{hash(nume)}"):
+                        st.session_state.cos.append(
+                            {
+                                "nume": nume,
+                                "pret_eur": pret,
+                                "qty": 1,
+                                "tip": "servicii_suplimentare",
+                                "fara_discount": True,
+                            }
+                        )
+                        st.rerun()
+            with st.expander("▾ Adaugă produs manual (uz general)", expanded=False):
+                mn = st.text_input("Denumire", key="man_n")
+                mq = st.text_input("Cantitate (buc)", key="man_q")
+                mp = st.text_input("Preț/unitate (€)", key="man_p")
+                if st.button("Adaugă în ofertă", key="man_add"):
+                    try:
+                        qv = float((mq or "").replace(",", "."))
+                        pv = float((mp or "").replace(",", "."))
+                    except ValueError:
+                        qv, pv = 0.0, 0.0
+                    if not (mn or "").strip() or qv <= 0 or pv <= 0:
+                        st.error("Completează denumirea, cantitatea și prețul.")
+                    else:
+                        st.session_state.cos.append(
+                            {"nume": mn.strip(), "pret_eur": round(pv, 2), "qty": qv, "tip": "produs_manual"}
+                        )
+                        st.rerun()
+
+            cats = _visible_categories(cursor)
+            for titlu in cats:
+                render_category_block(cursor, titlu, st.session_state.furnizor_global, readonly)
+
+    if st.button("Înapoi la ecran start", key="cfg_back_left", use_container_width=True):
+        st.session_state.parchet_calculator_open = False
+        st.session_state.page = "start"
+        st.rerun()
+
+
 def render_configurator() -> None:
     _init_state()
     st.markdown(CORP_CSS, unsafe_allow_html=True)
@@ -1087,7 +1222,15 @@ def render_configurator() -> None:
     max_disc = max(0, min(50, int(priv[1] or 15)))
     readonly = st.session_state.readonly_offer
 
-    render_sidebar_nav()
+    if st.session_state.sidebar_view == "main":
+
+        def _sidebar_config_extras() -> None:
+            st.markdown(SIDEBAR_CONFIG_PANEL_CSS, unsafe_allow_html=True)
+            _render_configurator_sidebar_configuration(cursor, readonly)
+
+        render_sidebar_nav(configurator_extras=_sidebar_config_extras)
+    else:
+        render_sidebar_nav()
 
     if st.session_state.sidebar_view == "istoric":
         _render_istoric_panel(db)
@@ -1108,94 +1251,7 @@ def render_configurator() -> None:
 
     disc_opts = sorted(set(["0"] + [str(x) for x in range(5, max_disc + 1, 5)] + [str(max_disc)]))
 
-    left, mid, right = st.columns([36, 36, 28], gap="small")
-
-    with left:
-        if st.session_state.dev_mode:
-            st.markdown(
-                '<div class="nf-page-head" style="margin-bottom:0.25rem;">'
-                '<span class="nf-dev-pill">Mod Dev — fără validare client.</span>'
-                "</div>",
-                unsafe_allow_html=True,
-            )
-        show_parchet_win = bool(st.session_state.parchet_calculator_open) and not readonly
-        if show_parchet_win:
-            with st.container(border=True):
-                st.markdown('<p class="nf-card-title">Configurare</p>', unsafe_allow_html=True)
-                st.session_state.safe_mode = st.toggle("Safe Mode", value=st.session_state.safe_mode)
-            with st.container(border=True):
-                _render_parchet_calculator_window(cursor)
-        else:
-            with st.container(border=True):
-                st.markdown('<p class="nf-card-title">Configurare</p>', unsafe_allow_html=True)
-                row_top = st.columns([5, 1])
-                with row_top[0]:
-                    fg = st.radio(
-                        "Alege furnizorul de ofertă:",
-                        ["Stoc", "Erkado"],
-                        horizontal=True,
-                        index=0 if st.session_state.furnizor_global == "Stoc" else 1,
-                        key="fglob",
-                    )
-                with row_top[1]:
-                    if not readonly:
-                        st.caption("")
-                        if st.button(
-                            "PARCHET",
-                            key="btn_parchet_win",
-                            use_container_width=True,
-                            help="Calculator parchet (categorie, colecție, cod)",
-                        ):
-                            st.session_state.parchet_calculator_open = True
-                            st.rerun()
-                st.session_state.furnizor_global = fg
-                st.session_state.safe_mode = st.toggle("Safe Mode", value=st.session_state.safe_mode)
-            with st.container(border=True):
-                st.markdown('<p class="nf-card-title">Catalog produse</p>', unsafe_allow_html=True)
-                SERVICII = [
-                    ("Scurtare set usa +toc", 11.0),
-                    ("Redimensionare K", 52.0),
-                    ("Redimensionare sus-jos", 52.0),
-                ]
-                with st.expander("▾ Servicii suplimentare (prețuri fixe, nu se aplică discount)", expanded=False):
-                    for nume, pret in SERVICII:
-                        if st.button(f"Adaugă — {nume} ({pret} €)", key=f"svc_{hash(nume)}"):
-                            st.session_state.cos.append(
-                                {
-                                    "nume": nume,
-                                    "pret_eur": pret,
-                                    "qty": 1,
-                                    "tip": "servicii_suplimentare",
-                                    "fara_discount": True,
-                                }
-                            )
-                            st.rerun()
-                with st.expander("▾ Adaugă produs manual (uz general)", expanded=False):
-                    mn = st.text_input("Denumire", key="man_n")
-                    mq = st.text_input("Cantitate (buc)", key="man_q")
-                    mp = st.text_input("Preț/unitate (€)", key="man_p")
-                    if st.button("Adaugă în ofertă", key="man_add"):
-                        try:
-                            qv = float((mq or "").replace(",", "."))
-                            pv = float((mp or "").replace(",", "."))
-                        except ValueError:
-                            qv, pv = 0.0, 0.0
-                        if not (mn or "").strip() or qv <= 0 or pv <= 0:
-                            st.error("Completează denumirea, cantitatea și prețul.")
-                        else:
-                            st.session_state.cos.append(
-                                {"nume": mn.strip(), "pret_eur": round(pv, 2), "qty": qv, "tip": "produs_manual"}
-                            )
-                            st.rerun()
-
-                cats = _visible_categories(cursor)
-                for titlu in cats:
-                    render_category_block(cursor, titlu, st.session_state.furnizor_global, readonly)
-
-        if st.button("Înapoi la ecran start", key="cfg_back_left", use_container_width=True):
-            st.session_state.parchet_calculator_open = False
-            st.session_state.page = "start"
-            st.rerun()
+    mid, right = st.columns([56, 44], gap="small")
 
     with right:
         aj_active = st.session_state.configurator_right_panel == "ajustari"
