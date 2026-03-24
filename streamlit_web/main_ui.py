@@ -475,6 +475,8 @@ def render_sidebar_nav() -> None:
         close_conn()
 
     with st.sidebar:
+        if _LOGO_NATUREN_PATH.is_file():
+            st.image(str(_LOGO_NATUREN_PATH), use_container_width=True)
         st.markdown("### Naturen Flow")
         st.caption("Navigare")
         choice = st.radio(
@@ -1041,18 +1043,13 @@ def render_configurator() -> None:
             close_conn()
         return
 
-    top_logo, top_head = st.columns([1, 4], gap="small")
-    with top_logo:
-        if _LOGO_NATUREN_PATH.is_file():
-            st.image(str(_LOGO_NATUREN_PATH), width=200)
-    with top_head:
-        if st.session_state.dev_mode:
-            st.markdown(
-                '<div class="nf-page-head">'
-                '<span class="nf-dev-pill">Mod Dev — fără validare client.</span>'
-                "</div>",
-                unsafe_allow_html=True,
-            )
+    if st.session_state.dev_mode:
+        st.markdown(
+            '<div class="nf-page-head">'
+            '<span class="nf-dev-pill">Mod Dev — fără validare client.</span>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
 
     @st.dialog("Ajustări ofertă")
     def _dlg_ajustari() -> None:
