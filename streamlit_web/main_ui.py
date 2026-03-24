@@ -71,16 +71,50 @@ CATEGORII_PARCHET = [
 
 CORP_CSS = """
 <style>
-    .block-container { padding-top: 1rem; max-width: 1400px; }
+    .block-container { padding-top: 0.65rem; padding-bottom: 1.25rem; max-width: 1440px; }
     div[data-testid="stHeader"] { background: #1a1a1a; }
     .stApp { background: #1e1e1e; color: #eceff1; }
     h1, h2, h3 { color: #43a047 !important; }
-    .corp-header {
-        background: #252525;
-        padding: 12px 20px;
-        border-radius: 4px;
-        margin-bottom: 12px;
+    .nf-page-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem 1rem;
+        margin-bottom: 0.35rem;
     }
+    .nf-page-head h2 { margin: 0 !important; font-size: 1.35rem !important; line-height: 1.2 !important; }
+    .nf-dev-pill {
+        font-size: 0.8rem;
+        padding: 0.25rem 0.65rem;
+        border-radius: 4px;
+        background: #2a3f2e;
+        border: 1px solid #43a047;
+        color: #c8e6c9;
+    }
+    /* Card titles inside bordered containers */
+    .nf-card-title {
+        font-size: 0.78rem;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #81c784;
+        margin: -4px 0 10px 0;
+        padding-bottom: 8px;
+        border-bottom: 1px solid #3d4a3f;
+    }
+    .nf-fin-block {
+        background: #1a231c;
+        border-radius: 6px;
+        padding: 12px 14px;
+        border: 1px solid #2d4a32;
+        margin: 4px 0 2px 0;
+        font-size: 0.95rem;
+        line-height: 1.65;
+    }
+    .nf-fin-block strong { color: #c8e6c9 !important; }
+    .nf-fin-total { font-size: 1.08rem; margin-top: 6px; padding-top: 8px; border-top: 1px solid #3d4a3f; }
+    .nf-actions-row { margin-top: 0.35rem; }
 </style>
 """
 
@@ -966,249 +1000,289 @@ def render_configurator() -> None:
             close_conn()
         return
 
-    st.markdown("## Configurator ofertă")
-
     if st.session_state.dev_mode:
-        st.info("Mod Dev — fără validare client.")
+        st.markdown(
+            '<div class="nf-page-head">'
+            '<h2>Configurator ofertă</h2>'
+            '<span class="nf-dev-pill">Mod Dev — fără validare client.</span>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            '<div class="nf-page-head"><h2>Configurator ofertă</h2></div>',
+            unsafe_allow_html=True,
+        )
 
-    left, right = st.columns([1, 1])
+    left, right = st.columns([2, 3])
 
     with left:
         show_parchet_win = bool(st.session_state.parchet_calculator_open) and not readonly
         if show_parchet_win:
-            _render_parchet_calculator_window(cursor)
+            with st.container(border=True):
+                st.markdown('<p class="nf-card-title">Configurare</p>', unsafe_allow_html=True)
+                st.session_state.safe_mode = st.toggle("Safe Mode", value=st.session_state.safe_mode)
+            with st.container(border=True):
+                _render_parchet_calculator_window(cursor)
         else:
-            row_top = st.columns([5, 1])
-            with row_top[0]:
-                fg = st.radio(
-                    "Alege furnizorul de ofertă:",
-                    ["Stoc", "Erkado"],
-                    horizontal=True,
-                    index=0 if st.session_state.furnizor_global == "Stoc" else 1,
-                    key="fglob",
-                )
-            with row_top[1]:
-                if not readonly:
-                    st.caption("")
-                    if st.button("PARCHET", key="btn_parchet_win", use_container_width=True, help="Calculator parchet (categorie, colecție, cod)"):
-                        st.session_state.parchet_calculator_open = True
-                        st.rerun()
-            st.session_state.furnizor_global = fg
-        st.session_state.safe_mode = st.toggle("Safe Mode", value=st.session_state.safe_mode)
-        if not show_parchet_win:
-            SERVICII = [
-                ("Scurtare set usa +toc", 11.0),
-                ("Redimensionare K", 52.0),
-                ("Redimensionare sus-jos", 52.0),
-            ]
-            with st.expander("▾ Servicii suplimentare (prețuri fixe, nu se aplică discount)", expanded=False):
-                for nume, pret in SERVICII:
-                    if st.button(f"Adaugă — {nume} ({pret} €)", key=f"svc_{hash(nume)}"):
-                        st.session_state.cos.append(
-                            {
-                                "nume": nume,
-                                "pret_eur": pret,
-                                "qty": 1,
-                                "tip": "servicii_suplimentare",
-                                "fara_discount": True,
-                            }
-                        )
-                        st.rerun()
-            with st.expander("▾ Adaugă produs manual (uz general)", expanded=False):
-                mn = st.text_input("Denumire", key="man_n")
-                mq = st.text_input("Cantitate (buc)", key="man_q")
-                mp = st.text_input("Preț/unitate (€)", key="man_p")
-                if st.button("Adaugă în ofertă", key="man_add"):
-                    try:
-                        qv = float((mq or "").replace(",", "."))
-                        pv = float((mp or "").replace(",", "."))
-                    except ValueError:
-                        qv, pv = 0.0, 0.0
-                    if not (mn or "").strip() or qv <= 0 or pv <= 0:
-                        st.error("Completează denumirea, cantitatea și prețul.")
-                    else:
-                        st.session_state.cos.append(
-                            {"nume": mn.strip(), "pret_eur": round(pv, 2), "qty": qv, "tip": "produs_manual"}
-                        )
-                        st.rerun()
+            with st.container(border=True):
+                st.markdown('<p class="nf-card-title">Configurare</p>', unsafe_allow_html=True)
+                row_top = st.columns([5, 1])
+                with row_top[0]:
+                    fg = st.radio(
+                        "Alege furnizorul de ofertă:",
+                        ["Stoc", "Erkado"],
+                        horizontal=True,
+                        index=0 if st.session_state.furnizor_global == "Stoc" else 1,
+                        key="fglob",
+                    )
+                with row_top[1]:
+                    if not readonly:
+                        st.caption("")
+                        if st.button(
+                            "PARCHET",
+                            key="btn_parchet_win",
+                            use_container_width=True,
+                            help="Calculator parchet (categorie, colecție, cod)",
+                        ):
+                            st.session_state.parchet_calculator_open = True
+                            st.rerun()
+                st.session_state.furnizor_global = fg
+                st.session_state.safe_mode = st.toggle("Safe Mode", value=st.session_state.safe_mode)
+            with st.container(border=True):
+                st.markdown('<p class="nf-card-title">Catalog produse</p>', unsafe_allow_html=True)
+                SERVICII = [
+                    ("Scurtare set usa +toc", 11.0),
+                    ("Redimensionare K", 52.0),
+                    ("Redimensionare sus-jos", 52.0),
+                ]
+                with st.expander("▾ Servicii suplimentare (prețuri fixe, nu se aplică discount)", expanded=False):
+                    for nume, pret in SERVICII:
+                        if st.button(f"Adaugă — {nume} ({pret} €)", key=f"svc_{hash(nume)}"):
+                            st.session_state.cos.append(
+                                {
+                                    "nume": nume,
+                                    "pret_eur": pret,
+                                    "qty": 1,
+                                    "tip": "servicii_suplimentare",
+                                    "fara_discount": True,
+                                }
+                            )
+                            st.rerun()
+                with st.expander("▾ Adaugă produs manual (uz general)", expanded=False):
+                    mn = st.text_input("Denumire", key="man_n")
+                    mq = st.text_input("Cantitate (buc)", key="man_q")
+                    mp = st.text_input("Preț/unitate (€)", key="man_p")
+                    if st.button("Adaugă în ofertă", key="man_add"):
+                        try:
+                            qv = float((mq or "").replace(",", "."))
+                            pv = float((mp or "").replace(",", "."))
+                        except ValueError:
+                            qv, pv = 0.0, 0.0
+                        if not (mn or "").strip() or qv <= 0 or pv <= 0:
+                            st.error("Completează denumirea, cantitatea și prețul.")
+                        else:
+                            st.session_state.cos.append(
+                                {"nume": mn.strip(), "pret_eur": round(pv, 2), "qty": qv, "tip": "produs_manual"}
+                            )
+                            st.rerun()
 
-            cats = _visible_categories(cursor)
-            for titlu in cats:
-                render_category_block(cursor, titlu, st.session_state.furnizor_global, readonly)
+                cats = _visible_categories(cursor)
+                for titlu in cats:
+                    render_category_block(cursor, titlu, st.session_state.furnizor_global, readonly)
 
     with right:
-        tab1, tab2 = st.tabs(["Produse în ofertă", "Rezumat ofertă"])
-        with tab1:
-            st.markdown("#### PRODUSE ÎN OFERTĂ")
-            if not st.session_state.cos:
-                st.caption("Coșul este gol.")
-            for i, item in enumerate(list(st.session_state.cos)):
-                extra = (item.get("nume_adaugire_pdf") or "").strip()
-                nume_afis = item["nume"] if not extra else f"{item['nume']} {extra}"
-                nume_afis = apply_majuscule_line_stoc_erkado(item, nume_afis)
-                cc1, cc2, cc3 = st.columns([1, 4, 2])
-                with cc1:
-                    if not readonly:
-                        if st.button("−", key=f"dq_{i}"):
-                            q = int(item.get("qty") or 1) - 1
-                            if q <= 0:
+        with st.container(border=True):
+            st.markdown('<p class="nf-card-title">Ofertă curentă</p>', unsafe_allow_html=True)
+            tab1, tab2 = st.tabs(["Produse în ofertă", "Rezumat ofertă"])
+            with tab1:
+                st.markdown("#### PRODUSE ÎN OFERTĂ")
+                if not st.session_state.cos:
+                    st.caption("Coșul este gol.")
+                for i, item in enumerate(list(st.session_state.cos)):
+                    extra = (item.get("nume_adaugire_pdf") or "").strip()
+                    nume_afis = item["nume"] if not extra else f"{item['nume']} {extra}"
+                    nume_afis = apply_majuscule_line_stoc_erkado(item, nume_afis)
+                    cc1, cc2, cc3 = st.columns([1, 4, 2])
+                    with cc1:
+                        if not readonly:
+                            if st.button("−", key=f"dq_{i}"):
+                                q = int(item.get("qty") or 1) - 1
+                                if q <= 0:
+                                    st.session_state.cos.pop(i)
+                                else:
+                                    st.session_state.cos[i]["qty"] = q
+                                st.rerun()
+                    with cc2:
+                        st.write(nume_afis)
+                    with cc3:
+                        if not readonly:
+                            if st.button("+", key=f"iq_{i}"):
+                                st.session_state.cos[i]["qty"] = int(item.get("qty") or 1) + 1
+                                st.rerun()
+                            if st.button("✕", key=f"rm_{i}"):
                                 st.session_state.cos.pop(i)
-                            else:
-                                st.session_state.cos[i]["qty"] = q
-                            st.rerun()
-                with cc2:
-                    st.write(nume_afis)
-                with cc3:
-                    if not readonly:
-                        if st.button("+", key=f"iq_{i}"):
-                            st.session_state.cos[i]["qty"] = int(item.get("qty") or 1) + 1
-                            st.rerun()
-                        if st.button("✕", key=f"rm_{i}"):
-                            st.session_state.cos.pop(i)
-                            st.rerun()
-        with tab2:
-            st.markdown("#### REZUMAT OFERTĂ")
-            for i, item in enumerate(st.session_state.cos):
-                if get_item_tip(item) in ("usi", "tocuri"):
-                    nv = st.text_input(
-                        f"Adăugire denumire #{i+1}",
-                        value=(item.get("nume_adaugire_pdf") or ""),
-                        key=f"rez_{i}",
-                    )
-                    item["nume_adaugire_pdf"] = (nv or "").strip()[:30]
-            st.caption("În PDF, adăugirile apar când este bifat «Condiții».")
+                                st.rerun()
+            with tab2:
+                st.markdown("#### REZUMAT OFERTĂ")
+                for i, item in enumerate(st.session_state.cos):
+                    if get_item_tip(item) in ("usi", "tocuri"):
+                        nv = st.text_input(
+                            f"Adăugire denumire #{i+1}",
+                            value=(item.get("nume_adaugire_pdf") or ""),
+                            key=f"rez_{i}",
+                        )
+                        item["nume_adaugire_pdf"] = (nv or "").strip()[:30]
+                st.caption("În PDF, adăugirile apar când este bifat «Condiții».")
 
-        st.markdown("---")
-        if st.button("🔄 Reîmprospătare catalog", key="ref_cat"):
-            st.rerun()
-        disc_opts = sorted(set(["0"] + [str(x) for x in range(5, max_disc + 1, 5)] + [str(max_disc)]))
-        st.session_state.discount = st.selectbox(
-            "Discount %",
-            disc_opts,
-            index=min(disc_opts.index(st.session_state.discount), len(disc_opts) - 1)
-            if st.session_state.discount in disc_opts
-            else 0,
-            disabled=readonly,
-        )
-        dproc = parse_discount_percent(st.session_state.discount)
-        st.session_state.masuratori_lei = float(
-            st.number_input("Măsurători (LEI, PDF)", value=float(st.session_state.masuratori_lei))
-        )
-        st.session_state.transport_lei = float(
-            st.number_input("Transport (LEI, PDF)", value=float(st.session_state.transport_lei))
-        )
+            if st.button("🔄 Reîmprospătare catalog", key="ref_cat"):
+                st.rerun()
+
+        with st.container(border=True):
+            st.markdown('<p class="nf-card-title">Ajustări ofertă</p>', unsafe_allow_html=True)
+            disc_opts = sorted(set(["0"] + [str(x) for x in range(5, max_disc + 1, 5)] + [str(max_disc)]))
+            st.session_state.discount = st.selectbox(
+                "Discount %",
+                disc_opts,
+                index=min(disc_opts.index(st.session_state.discount), len(disc_opts) - 1)
+                if st.session_state.discount in disc_opts
+                else 0,
+                disabled=readonly,
+            )
+            dproc = parse_discount_percent(st.session_state.discount)
+            st.session_state.masuratori_lei = float(
+                st.number_input("Măsurători (LEI, PDF)", value=float(st.session_state.masuratori_lei))
+            )
+            st.session_state.transport_lei = float(
+                st.number_input("Transport (LEI, PDF)", value=float(st.session_state.transport_lei))
+            )
+
         totals = compute_cart_totals(
             st.session_state.cos,
             discount_proc=dproc,
             tva_procent=st.session_state.tva,
             curs_euro=st.session_state.curs_euro,
         )
-        st.write(f"Valoare totală (TVA INCLUS): **{totals['total_fara_disc_lei']:.2f} RON**")
-        st.write(f"Discount aplicat (RON): **{totals['discount_ron']:.2f} RON**")
-        st.write(f"Valoare cu discount (TVA INCLUS): **{totals['ultima_valoare_lei']:.2f} RON**")
-        st.write(f"AVANS (40%): **{totals['avans_40']:.2f} RON**")
 
-        st.session_state.mentiuni = st.text_area("Mentiuni", value=st.session_state.mentiuni)
-        st.session_state.afiseaza_mentiuni_pdf = st.checkbox(
-            "Afișează mentiunile în PDF", value=st.session_state.afiseaza_mentiuni_pdf
-        )
-        st.session_state.conditii_pdf = st.checkbox("Condiții (PDF)", value=st.session_state.conditii_pdf)
-        st.session_state.termen_livrare = st.text_input(
-            "Termen livrare (zile)", value=st.session_state.termen_livrare
-        )
-
-        if not readonly:
-            if st.button("SALVEAZĂ OFERTA", type="primary"):
-                ok, msg = validate_offer_usi_toc(st.session_state.cos, st.session_state.safe_mode)
-                if not ok:
-                    st.error(msg)
-                else:
-                    c = st.session_state.client
-                    data_s = f"{c['an']}-{c['luna']} {datetime.now().strftime('%H:%M')}"
-                    try:
-                        cid = get_client_id_by_name(cursor, c["nume"])
-                        if cid is None:
-                            cid = insert_client(
-                                db.conn,
-                                cursor,
-                                c["nume"],
-                                c["tel"],
-                                c["adresa"],
-                                c["email"],
-                                datetime.now().strftime("%Y-%m-%d"),
-                            )
-                        detalii = dumps_offer_items(
-                            st.session_state.cos,
-                            mentiuni=st.session_state.mentiuni,
-                            afiseaza_mentiuni_pdf=st.session_state.afiseaza_mentiuni_pdf,
-                            conditii_pdf=st.session_state.conditii_pdf,
-                            termen_livrare_zile=_parse_termen_livrare_zile(st.session_state.termen_livrare),
-                        )
-                        oid = insert_offer(
-                            db.conn,
-                            cursor,
-                            id_client=cid,
-                            detalii_oferta=detalii,
-                            total_lei=totals["ultima_valoare_lei"],
-                            data_oferta=data_s,
-                            nume_client_temp=c["nume"],
-                            utilizator_creat=st.session_state.logged_user,
-                            discount_proc=dproc,
-                            curs_euro=st.session_state.curs_euro,
-                            safe_mode_enabled=1 if st.session_state.safe_mode else 0,
-                        )
-                        st.session_state.id_oferta_curenta = oid
-                        st.session_state.data_oferta_curenta = data_s
-                        st.success(f"Ofertă salvată (#{oid}).")
-                    except Exception as e:
-                        st.error(f"Eroare salvare: {e}")
-
-        data_comanda_pdf = (st.session_state.data_oferta_curenta or "").strip() or (
-            f"{st.session_state.client['an']}-{st.session_state.client['luna']} {datetime.now().strftime('%H:%M')}"
-        )
-        if st.button("📥 Generează PDF (descarcă)"):
-            if not st.session_state.cos:
-                st.error("Coșul este gol.")
-            else:
-                tel_c = get_user_contact_phone(cursor, st.session_state.logged_user) or None
-                nume_u = get_user_full_name(cursor, st.session_state.logged_user) or st.session_state.logged_user
-                oid = st.session_state.id_oferta_curenta
-                nr = str(oid).zfill(5) if oid else "-"
-                try:
-                    pdf_bytes = build_offer_pdf_bytes(
-                        nr_inreg=nr,
-                        nume_utilizator=nume_u,
-                        contact_tel=tel_c,
-                        contact_email=None,
-                        nume_client=st.session_state.client["nume"],
-                        telefon=st.session_state.client["tel"],
-                        adresa=st.session_state.client["adresa"],
-                        email=st.session_state.client.get("email") or "",
-                        cos_cumparaturi=st.session_state.cos,
-                        discount_proc=dproc,
-                        tva_procent=st.session_state.tva,
-                        curs_euro=st.session_state.curs_euro,
-                        total_lei_cu_discount=totals["ultima_valoare_lei"],
-                        mentiuni=st.session_state.mentiuni if st.session_state.afiseaza_mentiuni_pdf else "",
-                        masuratori_lei=st.session_state.masuratori_lei,
-                        transport_lei=st.session_state.transport_lei,
-                        conditii_pdf=st.session_state.conditii_pdf,
-                        termen_livrare_zile=_parse_termen_livrare_zile(st.session_state.termen_livrare),
-                        aplica_adaugiri_denumire=st.session_state.conditii_pdf,
-                        data_comanda=data_comanda_pdf,
-                    )
-                    st.session_state["_pdf_bytes"] = pdf_bytes
-                except Exception as ex:
-                    st.error(f"Eroare PDF: {ex}")
-        pb = st.session_state.get("_pdf_bytes")
-        if pb:
-            st.download_button(
-                label="Descarcă fișierul PDF generat",
-                data=pb,
-                file_name=f"Oferta_{(st.session_state.client['nume'] or 'client').replace(' ', '_')}.pdf",
-                mime="application/pdf",
-                key="dl_pdf",
+        with st.container(border=True):
+            st.markdown('<p class="nf-card-title">Rezumat financiar</p>', unsafe_allow_html=True)
+            st.markdown(
+                f"""<div class="nf-fin-block">
+<div>Valoare totală (TVA INCLUS): <strong>{totals["total_fara_disc_lei"]:.2f} RON</strong></div>
+<div>Discount aplicat (RON): <strong>{totals["discount_ron"]:.2f} RON</strong></div>
+<div>Valoare cu discount (TVA INCLUS): <strong>{totals["ultima_valoare_lei"]:.2f} RON</strong></div>
+<div class="nf-fin-total">AVANS (40%): <strong>{totals["avans_40"]:.2f} RON</strong></div>
+</div>""",
+                unsafe_allow_html=True,
             )
+
+        with st.container(border=True):
+            st.markdown('<p class="nf-card-title">Setări document și acțiuni</p>', unsafe_allow_html=True)
+            st.session_state.mentiuni = st.text_area("Mentiuni", value=st.session_state.mentiuni)
+            st.session_state.afiseaza_mentiuni_pdf = st.checkbox(
+                "Afișează mentiunile în PDF", value=st.session_state.afiseaza_mentiuni_pdf
+            )
+            st.session_state.conditii_pdf = st.checkbox("Condiții (PDF)", value=st.session_state.conditii_pdf)
+            st.session_state.termen_livrare = st.text_input(
+                "Termen livrare (zile)", value=st.session_state.termen_livrare
+            )
+
+            data_comanda_pdf = (st.session_state.data_oferta_curenta or "").strip() or (
+                f"{st.session_state.client['an']}-{st.session_state.client['luna']} {datetime.now().strftime('%H:%M')}"
+            )
+
+            btn_save, btn_pdf = st.columns(2)
+            with btn_save:
+                if not readonly:
+                    if st.button("SALVEAZĂ OFERTA", type="primary", use_container_width=True):
+                        ok, msg = validate_offer_usi_toc(st.session_state.cos, st.session_state.safe_mode)
+                        if not ok:
+                            st.error(msg)
+                        else:
+                            c = st.session_state.client
+                            data_s = f"{c['an']}-{c['luna']} {datetime.now().strftime('%H:%M')}"
+                            try:
+                                cid = get_client_id_by_name(cursor, c["nume"])
+                                if cid is None:
+                                    cid = insert_client(
+                                        db.conn,
+                                        cursor,
+                                        c["nume"],
+                                        c["tel"],
+                                        c["adresa"],
+                                        c["email"],
+                                        datetime.now().strftime("%Y-%m-%d"),
+                                    )
+                                detalii = dumps_offer_items(
+                                    st.session_state.cos,
+                                    mentiuni=st.session_state.mentiuni,
+                                    afiseaza_mentiuni_pdf=st.session_state.afiseaza_mentiuni_pdf,
+                                    conditii_pdf=st.session_state.conditii_pdf,
+                                    termen_livrare_zile=_parse_termen_livrare_zile(st.session_state.termen_livrare),
+                                )
+                                oid = insert_offer(
+                                    db.conn,
+                                    cursor,
+                                    id_client=cid,
+                                    detalii_oferta=detalii,
+                                    total_lei=totals["ultima_valoare_lei"],
+                                    data_oferta=data_s,
+                                    nume_client_temp=c["nume"],
+                                    utilizator_creat=st.session_state.logged_user,
+                                    discount_proc=dproc,
+                                    curs_euro=st.session_state.curs_euro,
+                                    safe_mode_enabled=1 if st.session_state.safe_mode else 0,
+                                )
+                                st.session_state.id_oferta_curenta = oid
+                                st.session_state.data_oferta_curenta = data_s
+                                st.success(f"Ofertă salvată (#{oid}).")
+                            except Exception as e:
+                                st.error(f"Eroare salvare: {e}")
+
+            with btn_pdf:
+                if st.button("📥 Generează PDF (descarcă)", use_container_width=True):
+                    if not st.session_state.cos:
+                        st.error("Coșul este gol.")
+                    else:
+                        tel_c = get_user_contact_phone(cursor, st.session_state.logged_user) or None
+                        nume_u = get_user_full_name(cursor, st.session_state.logged_user) or st.session_state.logged_user
+                        oid = st.session_state.id_oferta_curenta
+                        nr = str(oid).zfill(5) if oid else "-"
+                        try:
+                            pdf_bytes = build_offer_pdf_bytes(
+                                nr_inreg=nr,
+                                nume_utilizator=nume_u,
+                                contact_tel=tel_c,
+                                contact_email=None,
+                                nume_client=st.session_state.client["nume"],
+                                telefon=st.session_state.client["tel"],
+                                adresa=st.session_state.client["adresa"],
+                                email=st.session_state.client.get("email") or "",
+                                cos_cumparaturi=st.session_state.cos,
+                                discount_proc=dproc,
+                                tva_procent=st.session_state.tva,
+                                curs_euro=st.session_state.curs_euro,
+                                total_lei_cu_discount=totals["ultima_valoare_lei"],
+                                mentiuni=st.session_state.mentiuni if st.session_state.afiseaza_mentiuni_pdf else "",
+                                masuratori_lei=st.session_state.masuratori_lei,
+                                transport_lei=st.session_state.transport_lei,
+                                conditii_pdf=st.session_state.conditii_pdf,
+                                termen_livrare_zile=_parse_termen_livrare_zile(st.session_state.termen_livrare),
+                                aplica_adaugiri_denumire=st.session_state.conditii_pdf,
+                                data_comanda=data_comanda_pdf,
+                            )
+                            st.session_state["_pdf_bytes"] = pdf_bytes
+                        except Exception as ex:
+                            st.error(f"Eroare PDF: {ex}")
+            pb = st.session_state.get("_pdf_bytes")
+            if pb:
+                st.download_button(
+                    label="Descarcă fișierul PDF generat",
+                    data=pb,
+                    file_name=f"Oferta_{(st.session_state.client['nume'] or 'client').replace(' ', '_')}.pdf",
+                    mime="application/pdf",
+                    key="dl_pdf",
+                )
 
     close_conn = getattr(db.conn, "close", None)
     if callable(close_conn):
