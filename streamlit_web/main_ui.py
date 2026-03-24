@@ -1020,20 +1020,14 @@ def render_configurator() -> None:
     if st.session_state.dev_mode:
         st.markdown(
             '<div class="nf-page-head">'
-            '<h2>Configurator ofertă</h2>'
             '<span class="nf-dev-pill">Mod Dev — fără validare client.</span>'
             "</div>",
             unsafe_allow_html=True,
         )
-    else:
-        st.markdown(
-            '<div class="nf-page-head"><h2>Configurator ofertă</h2></div>',
-            unsafe_allow_html=True,
-        )
 
-    left, right = st.columns([11, 14])
+    tab_cfg, tab_cur, tab_adj = st.tabs(["Configurator ofertă", "Ofertă curentă", "Ajustări ofertă"])
 
-    with left:
+    with tab_cfg:
         show_parchet_win = bool(st.session_state.parchet_calculator_open) and not readonly
         if show_parchet_win:
             with st.container(border=True):
@@ -1109,7 +1103,7 @@ def render_configurator() -> None:
                 for titlu in cats:
                     render_category_block(cursor, titlu, st.session_state.furnizor_global, readonly)
 
-    with right:
+    with tab_cur:
         with st.container(border=True):
             st.markdown('<p class="nf-card-title">Ofertă curentă</p>', unsafe_allow_html=True)
             tab1, tab2 = st.tabs(["Produse în ofertă", "Rezumat ofertă"])
@@ -1156,6 +1150,7 @@ def render_configurator() -> None:
             if st.button("🔄 Reîmprospătare catalog", key="ref_cat"):
                 st.rerun()
 
+    with tab_adj:
         with st.container(border=True):
             st.markdown('<p class="nf-card-title">Ajustări ofertă</p>', unsafe_allow_html=True)
             disc_opts = sorted(set(["0"] + [str(x) for x in range(5, max_disc + 1, 5)] + [str(max_disc)]))
