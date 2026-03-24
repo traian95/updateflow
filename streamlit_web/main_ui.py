@@ -147,6 +147,10 @@ CONFIGURATOR_PAGE_CSS = """
         margin-right: auto !important;
         justify-content: center !important;
     }
+    /* Dialoguri modale (Ajustări / Setări document) */
+    div[data-testid="stDialog"] > div {
+        max-width: min(520px, 94vw) !important;
+    }
 </style>
 """
 
@@ -1042,6 +1046,49 @@ def render_configurator() -> None:
             unsafe_allow_html=True,
         )
 
+    @st.dialog("Ajustări ofertă")
+    def _dlg_ajustari() -> None:
+        disc_opts = sorted(set(["0"] + [str(x) for x in range(5, max_disc + 1, 5)] + [str(max_disc)]))
+        st.session_state.discount = st.selectbox(
+            "Discount %",
+            disc_opts,
+            index=min(disc_opts.index(st.session_state.discount), len(disc_opts) - 1)
+            if st.session_state.discount in disc_opts
+            else 0,
+            disabled=readonly,
+        )
+        st.session_state.masuratori_lei = float(
+            st.number_input("Măsurători (LEI, PDF)", value=float(st.session_state.masuratori_lei))
+        )
+        st.session_state.transport_lei = float(
+            st.number_input("Transport (LEI, PDF)", value=float(st.session_state.transport_lei))
+        )
+
+    @st.dialog("Setări document")
+    def _dlg_setari_document() -> None:
+        st.session_state.mentiuni = st.text_area("Mentiuni", value=st.session_state.mentiuni)
+        st.session_state.afiseaza_mentiuni_pdf = st.checkbox(
+            "Afișează mentiunile în PDF", value=st.session_state.afiseaza_mentiuni_pdf
+        )
+        st.session_state.conditii_pdf = st.checkbox("Condiții (PDF)", value=st.session_state.conditii_pdf)
+        st.session_state.termen_livrare = st.text_input(
+            "Termen livrare (zile)", value=st.session_state.termen_livrare
+        )
+
+    hdr_aj, hdr_doc = st.columns(2)
+    with hdr_aj:
+        if st.button(
+            "Ajustări ofertă",
+            use_container_width=True,
+            type="primary",
+            disabled=readonly,
+            key="hdr_open_ajustari",
+        ):
+            _dlg_ajustari()
+    with hdr_doc:
+        if st.button("Setări document", use_container_width=True, type="primary", key="hdr_open_doc"):
+            _dlg_setari_document()
+
     left, right = st.columns([1, 1], gap="large")
 
     with left:
@@ -1119,17 +1166,6 @@ def render_configurator() -> None:
                 for titlu in cats:
                     render_category_block(cursor, titlu, st.session_state.furnizor_global, readonly)
 
-        with st.container(border=True):
-            st.markdown('<p class="nf-card-title">Setări document</p>', unsafe_allow_html=True)
-            st.session_state.mentiuni = st.text_area("Mentiuni", value=st.session_state.mentiuni)
-            st.session_state.afiseaza_mentiuni_pdf = st.checkbox(
-                "Afișează mentiunile în PDF", value=st.session_state.afiseaza_mentiuni_pdf
-            )
-            st.session_state.conditii_pdf = st.checkbox("Condiții (PDF)", value=st.session_state.conditii_pdf)
-            st.session_state.termen_livrare = st.text_input(
-                "Termen livrare (zile)", value=st.session_state.termen_livrare
-            )
-
     with right:
         with st.container(border=True):
             st.markdown('<p class="nf-card-title">Ofertă curentă</p>', unsafe_allow_html=True)
@@ -1177,24 +1213,7 @@ def render_configurator() -> None:
             if st.button("🔄 Reîmprospătare catalog", key="ref_cat"):
                 st.rerun()
 
-        with st.container(border=True):
-            st.markdown('<p class="nf-card-title">Ajustări ofertă</p>', unsafe_allow_html=True)
-            disc_opts = sorted(set(["0"] + [str(x) for x in range(5, max_disc + 1, 5)] + [str(max_disc)]))
-            st.session_state.discount = st.selectbox(
-                "Discount %",
-                disc_opts,
-                index=min(disc_opts.index(st.session_state.discount), len(disc_opts) - 1)
-                if st.session_state.discount in disc_opts
-                else 0,
-                disabled=readonly,
-            )
-            dproc = parse_discount_percent(st.session_state.discount)
-            st.session_state.masuratori_lei = float(
-                st.number_input("Măsurători (LEI, PDF)", value=float(st.session_state.masuratori_lei))
-            )
-            st.session_state.transport_lei = float(
-                st.number_input("Transport (LEI, PDF)", value=float(st.session_state.transport_lei))
-            )
+        dproc = parse_discount_percent(st.session_state.discount)
 
         totals = compute_cart_totals(
             st.session_state.cos,
