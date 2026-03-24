@@ -4,3 +4,7 @@ v1.0.0 stabila/
 # PyInstaller output at repo root if present
 /dist/
 /build/
+
+# Python
+__pycache__/
+*.py[cod]
