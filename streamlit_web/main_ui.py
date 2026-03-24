@@ -1227,18 +1227,6 @@ def render_configurator() -> None:
             curs_euro=st.session_state.curs_euro,
         )
 
-        with st.container(border=True):
-            st.markdown('<p class="nf-card-title">Rezumat financiar</p>', unsafe_allow_html=True)
-            st.markdown(
-                f"""<div class="nf-fin-block">
-<div>Valoare totală (TVA INCLUS): <strong>{totals["total_fara_disc_lei"]:.2f} RON</strong></div>
-<div>Discount aplicat (RON): <strong>{totals["discount_ron"]:.2f} RON</strong></div>
-<div>Valoare cu discount (TVA INCLUS): <strong>{totals["ultima_valoare_lei"]:.2f} RON</strong></div>
-<div class="nf-fin-total">AVANS (40%): <strong>{totals["avans_40"]:.2f} RON</strong></div>
-</div>""",
-                unsafe_allow_html=True,
-            )
-
         data_comanda_pdf = (st.session_state.data_oferta_curenta or "").strip() or (
             f"{st.session_state.client['an']}-{st.session_state.client['luna']} {datetime.now().strftime('%H:%M')}"
         )
@@ -1337,6 +1325,25 @@ def render_configurator() -> None:
                     mime="application/pdf",
                     key="dl_pdf",
                 )
+
+    st.markdown("---")
+    fin_l, fin_c, fin_r = st.columns([1, 2, 1], gap="large")
+    with fin_l:
+        st.empty()
+    with fin_c:
+        with st.container(border=True):
+            st.markdown('<p class="nf-card-title">Rezumat financiar</p>', unsafe_allow_html=True)
+            st.markdown(
+                f"""<div class="nf-fin-block">
+<div>Valoare totală (TVA INCLUS): <strong>{totals["total_fara_disc_lei"]:.2f} RON</strong></div>
+<div>Discount aplicat (RON): <strong>{totals["discount_ron"]:.2f} RON</strong></div>
+<div>Valoare cu discount (TVA INCLUS): <strong>{totals["ultima_valoare_lei"]:.2f} RON</strong></div>
+<div class="nf-fin-total">AVANS (40%): <strong>{totals["avans_40"]:.2f} RON</strong></div>
+</div>""",
+                unsafe_allow_html=True,
+            )
+    with fin_r:
+        st.empty()
 
     close_conn = getattr(db.conn, "close", None)
     if callable(close_conn):
