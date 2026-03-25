@@ -1,22 +1,27 @@
 import streamlit as st
 
-# Function to create login UI
+# Set the page configuration
+st.set_page_config(page_title='Login', page_icon=':guardsman:', layout='centered', initial_sidebar_state='collapsed')
 
-def login_ui():
-    st.title("Welcome to UpdateFlow")
-    st.markdown("## Please log in to continue")
+# Load logo
+st.image('path/to/naturen_flow_logo.png', width=200)
 
-    # Centered card
-    with st.container():
-        st.write("")  # Empty line for padding
-        card = st.container()
-        with card:
-            # Logo at the top
-            st.image("path_to_your_logo.png", width=200)
-            st.text_input("Username", placeholder="Enter your username", key='username')
-            st.text_input("Password", placeholder="Enter your password", type='password', key='password')
-            st.button("Login", key='login_button', style="background-color: #4CAF50; color: white; padding: 10px; border: none; cursor: pointer;")
+# Style for dark theme
+st.markdown('<style>body{background-color: #1d1d1d; color: #ffffff;} .stTextInput {background-color: #2a2a2a; color: #ffffff;} .stButton {background-color: #4caf50;}</style>', unsafe_allow_html=True)
 
-# Main function
-if __name__ == '__main__':
-    login_ui()
+st.title('Login to Naturen Flow')
+
+# Username input
+username = st.text_input('Username', '')
+
+# Password input
+password = st.text_input('Password', '', type='password')
+
+# Authentication button
+if st.button('Login'):
+    # Here you would add the logic for authentication against the database and config.
+    if authenticate(username, password):  # Assuming you have an authenticate function defined elsewhere
+        st.success('Logged in successfully!')
+        # Redirect or load user dashboard
+    else:
+        st.error('Invalid username or password')
