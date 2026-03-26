@@ -64,20 +64,39 @@ def render_login_custom() -> None:
     
     cfg = AppConfig()
     
-    # Centered container
-    col1, col2, col3 = st.columns([1, 2, 1])
+    # Perfect centering with custom CSS
+    st.markdown("""
+    <style>
+    .login-container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        padding: 20px;
+    }
+    .logo-container {
+        text-align: center;
+        margin-bottom: 30px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # Centered container with better proportions
+    col1, col2, col3 = st.columns([1.5, 2, 1.5])
     
     with col2:
-        st.markdown("<div style='text-align:center'>", unsafe_allow_html=True)
+        st.markdown("<div class='login-container'>", unsafe_allow_html=True)
         
-        # Logo
+        # Logo perfectly centered
         if _LOGO_NATUREN_PATH.is_file():
-            st.image(str(_LOGO_NATUREN_PATH), width=180)
+            st.markdown("<div class='logo-container'>", unsafe_allow_html=True)
+            st.image(str(_LOGO_NATUREN_PATH), width=200)
+            st.markdown("</div>", unsafe_allow_html=True)
         
-        st.markdown("# Naturen Flow")
-        st.markdown("### Autentificare utilizator")
-        
-        st.markdown("</div>", unsafe_allow_html=True)
+        # Title centered
+        st.markdown("<h1 style='text-align: center; color: #43a047; margin-bottom: 10px;'>Naturen Flow</h1>", unsafe_allow_html=True)
+        st.markdown("<h3 style='text-align: center; color: #eceff1; margin-bottom: 30px;'>Autentificare utilizator</h3>", unsafe_allow_html=True)
         
         # Login form
         with st.form("login_form"):
@@ -89,9 +108,8 @@ def render_login_custom() -> None:
             r = _try_login(user, pw, cfg)
             if r.get("ok"):
                 st.session_state.logged_user = r["user"]
-                st.session_state.page = "start"
-                st.session_state.sidebar_view = "main"
-                st.session_state["nav_radio"] = "Acasă"
+                st.session_state.page = "main"
+                st.success(f"✅ Bun venit, {r['user']}!")
                 st.rerun()
             elif r.get("reason") == "not_approved":
                 st.error("❌ Contul nu a fost aprobat de administrator.")
@@ -101,3 +119,5 @@ def render_login_custom() -> None:
                 st.error(f"❌ Eroare conexiune: {r.get('error', '')}")
             else:
                 st.error("❌ Utilizator sau parolă greșită.")
+        
+        st.markdown("</div>", unsafe_allow_html=True)

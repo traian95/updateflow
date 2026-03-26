@@ -15,8 +15,43 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Import and run the login UI
-from streamlit_web.main_ui import render_login as run
+# Initialize session state
+if "logged_user" not in st.session_state:
+    st.session_state.logged_user = None
+if "page" not in st.session_state:
+    st.session_state.page = "login"
+
+def render_main_app():
+    """Render the main application after login"""
+    st.markdown("# 🌿 Welcome to Naturen Flow")
+    st.markdown(f"**Logged in as:** {st.session_state.logged_user}")
+    
+    # Add a simple logout button
+    if st.button("Logout", type="primary"):
+        st.session_state.logged_user = None
+        st.session_state.page = "login"
+        st.rerun()
+    
+    st.markdown("---")
+    st.markdown("## Dashboard")
+    st.markdown("Your main application content would go here.")
+    
+    # Placeholder for future features
+    st.markdown("### Features coming soon:")
+    st.markdown("- Order management")
+    st.markdown("- Inventory tracking")
+    st.markdown("- Reporting dashboard")
+
+def render_login():
+    """Render login page"""
+    from streamlit_web.main_ui import render_login as run_login
+    run_login()
+
+# Main routing logic
+if st.session_state.logged_user:
+    render_main_app()
+else:
+    render_login()
 
 if __name__ == "__main__":
-    run()
+    pass  # Routing handled above
