@@ -23,24 +23,8 @@ if "page" not in st.session_state:
 
 def render_main_app():
     """Render the main application after login"""
-    st.markdown("# 🌿 Welcome to Naturen Flow")
-    st.markdown(f"**Logged in as:** {st.session_state.logged_user}")
-    
-    # Add a simple logout button
-    if st.button("Logout", type="primary"):
-        st.session_state.logged_user = None
-        st.session_state.page = "login"
-        st.rerun()
-    
-    st.markdown("---")
-    st.markdown("## Dashboard")
-    st.markdown("Your main application content would go here.")
-    
-    # Placeholder for future features
-    st.markdown("### Features coming soon:")
-    st.markdown("- Order management")
-    st.markdown("- Inventory tracking")
-    st.markdown("- Reporting dashboard")
+    from streamlit_web.main_app import main
+    main()
 
 def render_login():
     """Render login page"""
