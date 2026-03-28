@@ -3,19 +3,12 @@ from __future__ import annotations
 
 import os
 import re
-import json
 from datetime import datetime
 from typing import Any, Optional
 
 from fpdf import FPDF
 
 from .config import AppConfig
-
-_DEBUG_LOG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "debug-4d10ac.log"))
-
-
-def _agent_debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    return
 
 _SERVICII_FARA_DISCOUNT = frozenset({
     "scurtare set usa +toc",
@@ -130,20 +123,6 @@ def build_oferta_pret_pdf(
     Generează PDF-ul ofertei în format „OFERTA DE PRET” (chenar, tabel, texte în română).
     Toate datele sunt primite ca parametri; același aspect ca în aplicația principală.
     """
-    # #region agent log
-    _agent_debug_log(
-        run_id="pre-fix",
-        hypothesis_id="H5",
-        location="pdf_export.py:build_oferta_pret_pdf:entry",
-        message="Intrare build_oferta_pret_pdf",
-        data={
-            "nr_inreg_raw": nr_inreg,
-            "nume_client": nume_client,
-            "data_comanda": data_comanda,
-            "items_count": len(cos_cumparaturi or []),
-        },
-    )
-    # #endregion
     pdf = FPDF()
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
@@ -153,17 +132,6 @@ def build_oferta_pret_pdf(
     pdf.cell(0, 12, "OFERTA DE PRET", ln=True, align="C")
     pdf.set_font("Helvetica", "", 11)
     header_nr = _pdf_safe_text(f"Nr. înregistrare: {nr_inreg}")
-    # #region agent log
-    _agent_debug_log(
-        run_id="pre-fix",
-        hypothesis_id="H5",
-        location="pdf_export.py:build_oferta_pret_pdf:header_nr",
-        message="Text final folosit pentru antet nr înregistrare",
-        data={
-            "header_nr": header_nr,
-        },
-    )
-    # #endregion
     pdf.cell(0, 9, header_nr, ln=True, align="C")
     pdf.set_font("Helvetica", "", 9)
     data_afisata = _format_data_pdf(data_comanda)
@@ -284,26 +252,6 @@ def build_oferta_pret_pdf(
             pret_unitar_ron = pret_unitar_ron_fara_discount
             qty = item.get("qty") or 1
             pret_total_rand_ron = pret_unitar_ron * qty
-        # #region agent log
-        _agent_debug_log(
-            run_id="post-fix",
-            hypothesis_id="H5",
-            location="pdf_export.py:build_oferta_pret_pdf:item_row",
-            message="PDF row pricing basis",
-            data={
-                "nume": item.get("nume"),
-                "tip": item.get("tip"),
-                "qty": qty,
-                "pret_eur": pret_eur,
-                "is_fara_discount": _is_item_fara_discount(item),
-                "discount_proc": discount_proc,
-                "unit_ron_fara_discount": round(pret_unitar_ron_fara_discount, 2),
-                "unit_ron_cu_discount": round(pret_unitar_ron_cu_discount, 2),
-                "unit_ron_afisat_in_tabel": round(pret_unitar_ron, 2),
-                "row_total_ron_afisat_in_tabel": round(pret_total_rand_ron, 2),
-            },
-        )
-        # #endregion
         # În coloana din mijloc afișăm numărul de articole (bucăți).
         buc_afis = str(qty)
         nume_afis = item.get("nume") or ""
@@ -363,24 +311,6 @@ def build_oferta_pret_pdf(
         + sum_eng_disc_pdf
     )
     total_lei_final = total_lei_cu_discount if total_lei_cu_discount > 0 else total_cu_disc_calculat_lei
-    # #region agent log
-    _agent_debug_log(
-        run_id="post-fix",
-        hypothesis_id="H6",
-        location="pdf_export.py:build_oferta_pret_pdf:totals",
-        message="PDF totals computed and selected",
-        data={
-            "discount_proc": discount_proc,
-            "total_eur_pdf": round(total_eur_pdf, 4),
-            "total_eur_discountabil": round(total_eur_discountabil, 4),
-            "total_eur_fara_discount": round(total_eur_fara_discount, 4),
-            "total_fara_disc_lei": round(total_fara_disc_lei, 2),
-            "total_cu_disc_calculat_lei": round(total_cu_disc_calculat_lei, 2),
-            "total_lei_cu_discount_param": round(float(total_lei_cu_discount or 0), 2),
-            "total_lei_final_folosit": round(total_lei_final, 2),
-        },
-    )
-    # #endregion
     pdf.set_font("Helvetica", "", 10)
     pdf.cell(0, 8, _pdf_safe_text(f"Valoare totala (TVA INCLUS): {total_fara_disc_lei:.2f} RON"), ln=True)
 

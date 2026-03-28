@@ -16,7 +16,6 @@ from typing import Any, Optional
 import requests
 from supabase import Client, create_client
 
-from ofertare.agent_debug_log import append_agent_debug_ndjson
 from ofertare.db_cloud import SUPABASE_KEY, SUPABASE_URL
 
 try:
@@ -34,25 +33,6 @@ EXTERNAL_UPDATER_EXE_NAME = "updater.exe"
 EXTERNAL_UPDATER_SCRIPT_NAME = "updater.py"
 
 logger = logging.getLogger(__name__)
-
-
-def _debug_update_check_ndjson(
-    hypothesis_id: str,
-    location: str,
-    message: str,
-    data: dict | None = None,
-    run_id: str = "banner-check",
-) -> None:
-    # #region agent log
-    append_agent_debug_ndjson(
-        session_id="88fd1f",
-        run_id=run_id,
-        hypothesis_id=hypothesis_id,
-        location=location,
-        message=message,
-        data=data,
-    )
-    # #endregion
 
 
 def _log_console(message: str) -> None:
@@ -184,20 +164,34 @@ def _is_remote_newer(local_version: str, remote_version: str) -> bool:
 
 
 def _get_latest_active_update_row(supabase: Client) -> Optional[dict[str, Any]]:
-    query = supabase.table(TABLE_UPDATES).select("*")
-    try:
-        query = query.eq("is_active", True)
-    except Exception:
-        pass
-    for app_column in ("app_name", "slug"):
+    """Caută ultimul rând activ pentru `APP_SLUG` pe coloana `app_name` (fără `slug` — multe scheme Supabase nu au coloana slug)."""
+
+    def _fetch_filtered(app_column: str) -> Optional[dict[str, Any]]:
         try:
-            rows = query.eq(app_column, APP_SLUG).order("created_at", desc=True).limit(1).execute().data or []
-            if rows:
-                return rows[0]
+            q = supabase.table(TABLE_UPDATES).select("*")
+            try:
+                q = q.eq("is_active", True)
+            except Exception:
+                pass
+            rows = q.eq(app_column, APP_SLUG).order("created_at", desc=True).limit(1).execute().data or []
+            return rows[0] if rows else None
         except Exception:
-            continue
-    rows = query.order("created_at", desc=True).limit(1).execute().data or []
-    return rows[0] if rows else None
+            return None
+
+    row = _fetch_filtered("app_name")
+    if row:
+        return row
+
+    try:
+        q = supabase.table(TABLE_UPDATES).select("*")
+        try:
+            q = q.eq("is_active", True)
+        except Exception:
+            pass
+        rows = q.order("created_at", desc=True).limit(1).execute().data or []
+        return rows[0] if rows else None
+    except Exception:
+        return None
 
 
 def _normalize_update_row(row: dict[str, Any] | None) -> dict[str, Any]:
@@ -269,10 +263,6 @@ def upload_new_version(
         if is_active:
             try:
                 supabase.table(TABLE_UPDATES).update({"is_active": 0}).eq("app_name", APP_SLUG).eq("is_active", 1).execute()
-            except Exception:
-                pass
-            try:
-                supabase.table(TABLE_UPDATES).update({"is_active": 0}).eq("slug", APP_SLUG).eq("is_active", 1).execute()
             except Exception:
                 pass
 
@@ -384,15 +374,10 @@ def check_for_updates(version_locala: str | None = None) -> dict[str, Any]:
         supabase = _get_supabase_client()
         local_clean = str(version_locala or get_local_version()).strip()
         _log_console(f"Versiunea locala este: {local_clean}")
+        latest_updates_row = None
         try:
             latest_updates_row = _get_latest_active_update_row(supabase)
         except Exception as exc_u:
-            _debug_update_check_ndjson(
-                "B1",
-                "updater.py:check_for_updates",
-                "app_updates_query_failed",
-                {"error": str(exc_u)[:400]},
-            )
             _log_console(f"[Updater] app_updates: {exc_u}")
         row = _normalize_update_row(latest_updates_row)
         version_cloud = row.get("version", "")
@@ -422,12 +407,6 @@ def check_for_updates(version_locala: str | None = None) -> dict[str, Any]:
         }
     except Exception as exc:
         _log_console(f"[Updater] Eroare la verificarea update-ului: {exc}")
-        _debug_update_check_ndjson(
-            "B5",
-            "updater.py:check_for_updates",
-            "check_exception",
-            {"exc_type": type(exc).__name__, "msg": str(exc)[:500]},
-        )
         return {"update_available": False, "reason": "error", "error": str(exc)}
 
 

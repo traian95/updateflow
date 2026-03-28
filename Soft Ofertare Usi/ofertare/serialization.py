@@ -16,6 +16,8 @@ def dumps_offer_items(
     transport_lei: float | None = None,
     conditii_pdf: bool | None = None,
     termen_livrare_zile: str | int | None = None,
+    modificat_de: str | None = None,
+    modificat_la: str | None = None,
 ) -> str:
     """
     Serializează conținutul coșului + metadate (mentiuni, flag PDF, costuri suplimentare) într-un string.
@@ -31,6 +33,8 @@ def dumps_offer_items(
         and transport_lei is None
         and conditii_pdf is None
         and termen_livrare_zile is None
+        and modificat_de is None
+        and modificat_la is None
     ):
         # Comportament vechi: doar lista de produse.
         return json.dumps(items, ensure_ascii=False)
@@ -48,6 +52,10 @@ def dumps_offer_items(
         payload["conditii_pdf"] = bool(conditii_pdf)
     if termen_livrare_zile is not None:
         payload["termen_livrare_zile"] = str(termen_livrare_zile).strip()
+    if modificat_de:
+        payload["modificat_de"] = str(modificat_de).strip()
+    if modificat_la:
+        payload["modificat_la"] = str(modificat_la).strip()
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -102,4 +110,19 @@ def loads_offer_items(raw: str):
         data["items"] = _normalize_items_list(data.get("items", []))
         return data
     return _normalize_items_list(data)
+
+
+def get_offer_modificare_meta(raw: str) -> tuple[str, str] | None:
+    """Din `detalii_oferta`: utilizator și moment ultimă modificare (nu afectează PDF)."""
+    s = (raw or "").strip()
+    if not s:
+        return None
+    data = loads_offer_items(s)
+    if not isinstance(data, dict):
+        return None
+    u = (data.get("modificat_de") or "").strip()
+    if not u:
+        return None
+    la = (data.get("modificat_la") or "").strip()
+    return (u, la)
 

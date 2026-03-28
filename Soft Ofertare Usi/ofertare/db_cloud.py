@@ -26,10 +26,6 @@ _ROWS_PAGE_SIZE = 1000
 VERBOSE_SYNC_LOG = True
 
 
-def _agent_debug_log(*args, **kwargs):
-    return
-
-
 def _verbose_log(message: str, payload: Any = None) -> None:
     if not VERBOSE_SYNC_LOG:
         return
@@ -215,19 +211,20 @@ def get_all_clienti_telefon(cursor):
 
 def get_clienti_with_oferte_count(cursor, nume_like: str, data_min: Optional[str] = None, utilizator_creat: Optional[str] = None):
     oferte = _rows(TABLE_OFERTE)
+    offer_counts: dict[int, int] = {}
+    for o in oferte:
+        if utilizator_creat and str(o.get("utilizator_creat") or "") != utilizator_creat:
+            continue
+        cid = int(o.get("id_client") or 0)
+        offer_counts[cid] = offer_counts.get(cid, 0) + 1
     out = []
     for c in _rows(TABLE_CLIENTI):
         if not _like(str(c.get("nume") or ""), nume_like):
             continue
         if data_min and str(c.get("data_creare") or "") < data_min:
             continue
-        cnt = 0
-        for o in oferte:
-            if int(o.get("id_client") or 0) != int(c.get("id") or 0):
-                continue
-            if utilizator_creat and str(o.get("utilizator_creat") or "") != utilizator_creat:
-                continue
-            cnt += 1
+        cid = int(c.get("id") or 0)
+        cnt = offer_counts.get(cid, 0)
         out.append((c.get("id"), c.get("nume"), c.get("adresa"), c.get("telefon"), cnt))
     out.sort(key=lambda x: int(x[0] or 0), reverse=True)
     return out
@@ -337,6 +334,45 @@ def update_offer_detalii(conn, cursor, offer_id: int, detalii_oferta: str) -> No
     res = _get_supabase_client().table(TABLE_OFERTE).update(payload).eq("id", offer_id).execute()
     elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
     _verbose_log("UPDATE oferte response", {"elapsed_ms": elapsed_ms, "data": res.data, "count": res.count})
+    _invalidate(TABLE_OFERTE)
+
+
+def get_offer_snapshot(cursor, offer_id: int) -> Optional[dict[str, Any]]:
+    for r in _rows(TABLE_OFERTE):
+        if int(r.get("id") or 0) == int(offer_id):
+            return dict(r)
+    return None
+
+
+def update_offer_full(
+    conn,
+    cursor,
+    offer_id: int,
+    id_client: int,
+    detalii_oferta: str,
+    total_lei: float,
+    data_oferta: str,
+    nume_client_temp: str,
+    discount_proc: int,
+    curs_euro: float,
+    safe_mode_enabled: int = 1,
+) -> None:
+    """Actualizează oferta existentă fără duplicat; `utilizator_creat` rămâne neschimbat."""
+    payload = {
+        "id_client": id_client,
+        "detalii_oferta": detalii_oferta,
+        "total_lei": total_lei,
+        "data_oferta": data_oferta,
+        "nume_client_temp": nume_client_temp,
+        "discount_proc": discount_proc,
+        "curs_euro": curs_euro,
+        "safe_mode_enabled": 1 if safe_mode_enabled else 0,
+    }
+    _verbose_log("UPDATE oferte (full) payload", {"id": offer_id, **payload})
+    started = time.perf_counter()
+    res = _get_supabase_client().table(TABLE_OFERTE).update(payload).eq("id", offer_id).execute()
+    elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+    _verbose_log("UPDATE oferte (full) response", {"elapsed_ms": elapsed_ms, "data": res.data, "count": res.count})
     _invalidate(TABLE_OFERTE)
 
 

@@ -25,6 +25,7 @@ from ofertare.db import (
     get_colectii_produse,
     get_decor_finisaj_pairs,
     get_istoric_oferte,
+    get_offer_snapshot,
     get_manere_engs_finisaje,
     get_manere_engs_modele,
     get_manere_engs_pret_lei,
@@ -44,9 +45,10 @@ from ofertare.db import (
     insert_offer,
     open_db,
     search_produse,
+    update_offer_full,
 )
 from ofertare.pdf_export import apply_majuscule_line_stoc_erkado
-from ofertare.serialization import dumps_offer_items, loads_offer_items
+from ofertare.serialization import dumps_offer_items, get_offer_modificare_meta, loads_offer_items
 from ofertare.services import fetch_bnr_eur_rate
 
 from streamlit_web.offer_math import (
@@ -360,6 +362,8 @@ def _init_state() -> None:
         st.session_state.parchet_calculator_open = False
     if "configurator_right_panel" not in st.session_state:
         st.session_state.configurator_right_panel = "ajustari"
+    if "editing_offer_id" not in st.session_state:
+        st.session_state.editing_offer_id = None
 
 
 def _db():
@@ -529,16 +533,10 @@ def render_login() -> None:
             st.error("Utilizator sau parolă greșită.")
 
 
-def render_sidebar_nav() -> None:
+def render_sidebar_nav(db, priv: tuple[int, int, int, int, int]) -> None:
     """Meniuri (ISTORIC, CĂUTARE, MOD DEV) în sidebar, ca taburi verticale."""
     st.markdown(SIDEBAR_NAV_CSS, unsafe_allow_html=True)
-    cfg = AppConfig()
-    db = _db()
-    priv = _privileges_tuple(st.session_state.logged_user, db.cursor, cfg)
     can_dev = priv[4] == 1
-    close_conn = getattr(db.conn, "close", None)
-    if callable(close_conn):
-        close_conn()
 
     with st.sidebar:
         if _LOGO_NATUREN_PATH.is_file():
@@ -573,6 +571,39 @@ def render_sidebar_nav() -> None:
             st.rerun()
 
 
+def _hydrate_session_from_offer_detalii(
+    detalii: str,
+    nume: str,
+    data_o: str,
+    rid: int,
+    *,
+    readonly: bool,
+) -> None:
+    data = loads_offer_items(detalii) if detalii else []
+    if isinstance(data, dict):
+        st.session_state.cos = list(data.get("items") or [])
+        st.session_state.mentiuni = (data.get("mentiuni") or "")
+        st.session_state.afiseaza_mentiuni_pdf = bool(data.get("afiseaza_mentiuni_pdf"))
+        st.session_state.conditii_pdf = bool(data.get("conditii_pdf"))
+        st.session_state.termen_livrare = str(data.get("termen_livrare_zile") or "0")
+        if data.get("masuratori_lei") is not None:
+            try:
+                st.session_state.masuratori_lei = float(data.get("masuratori_lei") or 0)
+            except (TypeError, ValueError):
+                pass
+        if data.get("transport_lei") is not None:
+            try:
+                st.session_state.transport_lei = float(data.get("transport_lei") or 0)
+            except (TypeError, ValueError):
+                pass
+    else:
+        st.session_state.cos = list(data or [])
+    st.session_state.readonly_offer = readonly
+    st.session_state.id_oferta_curenta = rid
+    st.session_state.data_oferta_curenta = data_o or ""
+    st.session_state.client["nume"] = nume or ""
+
+
 def _render_istoric_panel(db) -> None:
     pk = st.session_state.page
     st.markdown("## Istoric oferte")
@@ -586,19 +617,67 @@ def _render_istoric_panel(db) -> None:
     )
     for rid, nume, total, data_o, detalii, avans, ucreate in rows[:80]:
         with st.container():
-            st.write(f"**#{rid}** {nume} — {data_o} — {total:.2f} LEI — {ucreate}")
+            mod_extra = ""
+            mm = get_offer_modificare_meta(detalii or "")
+            if mm:
+                mod_extra = f" — _Modificat de **{mm[0]}**_"
+            st.write(f"**#{rid}** {nume} — {data_o} — {total:.2f} LEI — {ucreate}{mod_extra}")
             if st.button(f"Deschide #{rid}", key=f"opn_{pk}_{rid}"):
-                data = loads_offer_items(detalii) if detalii else []
-                items = data.get("items", []) if isinstance(data, dict) else data
-                st.session_state.cos = list(items or [])
-                st.session_state.readonly_offer = True
-                st.session_state.id_oferta_curenta = rid
-                st.session_state.data_oferta_curenta = data_o or ""
-                st.session_state.client["nume"] = nume or ""
+                _hydrate_session_from_offer_detalii(detalii or "", nume or "", data_o or "", rid, readonly=True)
+                st.session_state.editing_offer_id = None
                 st.session_state["nav_radio"] = "Acasă"
                 st.session_state.sidebar_view = "main"
                 st.session_state.page = "configurator"
                 st.rerun()
+
+    if rows:
+        st.divider()
+        st.caption("Selectați oferta, apoi deschideți configuratorul pentru editare (aceeași interfață ca la ofertă nouă).")
+        choice_labels = [f"#{r[0]} — {r[1] or '—'} — {r[3]}" for r in rows[:80]]
+        label_to_rid = {choice_labels[i]: rows[i][0] for i in range(len(choice_labels))}
+        pick = st.selectbox("Ofertă de modificat", choice_labels, key=f"istoric_pick_{pk}")
+        if st.button("Modifică oferta selectată", type="primary", key=f"istoric_mod_{pk}"):
+            rid = int(label_to_rid[pick])
+            row = next(r for r in rows[:80] if int(r[0]) == rid)
+            _rid, nume, _total, data_o, detalii, _avans, _ucreate = row
+            _hydrate_session_from_offer_detalii(detalii or "", nume or "", data_o or "", rid, readonly=False)
+            st.session_state.editing_offer_id = rid
+            snap = get_offer_snapshot(db.cursor, rid)
+            if snap:
+                priv = get_user_privileges(db.cursor, st.session_state.logged_user)
+                max_disc = max(0, min(50, int((priv or (1, 15, 1, 1))[1] or 15)))
+                try:
+                    dproc = int(snap.get("discount_proc") or 0)
+                except (TypeError, ValueError):
+                    dproc = 0
+                dproc = max(0, min(dproc, max_disc))
+                disc_opts = sorted(
+                    set(["0"] + [str(x) for x in range(5, max_disc + 1, 5)] + [str(max_disc)]),
+                    key=lambda x: int(x),
+                )
+                ds = str(dproc)
+                if ds not in disc_opts:
+                    nums = sorted(int(x) for x in disc_opts)
+                    lower = max([n for n in nums if n <= dproc], default=0)
+                    ds = str(lower)
+                st.session_state.discount = ds
+                try:
+                    st.session_state.curs_euro = float(snap.get("curs_euro") or st.session_state.curs_euro)
+                except (TypeError, ValueError):
+                    pass
+                st.session_state.safe_mode = bool(int(snap.get("safe_mode_enabled") or 1))
+                cid = int(snap.get("id_client") or 0)
+                if cid:
+                    crow = get_client_by_id(db.cursor, cid)
+                    if crow:
+                        st.session_state.client["nume"] = crow[0] or ""
+                        st.session_state.client["tel"] = (crow[1] or "").strip()
+                        st.session_state.client["adresa"] = (crow[2] or "").strip()
+                        st.session_state.client["email"] = (crow[3] or "").strip() if len(crow) > 3 else ""
+            st.session_state["nav_radio"] = "Acasă"
+            st.session_state.sidebar_view = "main"
+            st.session_state.page = "configurator"
+            st.rerun()
 
 
 def _render_cautare_panel(db) -> None:
@@ -632,10 +711,10 @@ def _render_cautare_panel(db) -> None:
 def render_start() -> None:
     _init_state()
     st.markdown(CORP_CSS, unsafe_allow_html=True)
-    render_sidebar_nav()
     cfg = AppConfig()
     db = _db()
     priv = _privileges_tuple(st.session_state.logged_user, db.cursor, cfg)
+    render_sidebar_nav(db, priv)
     can_modify_curs = priv[0] == 1
 
     if st.session_state.sidebar_view == "istoric":
@@ -698,6 +777,7 @@ def render_start() -> None:
                 st.session_state.cos = []
                 st.session_state.id_oferta_curenta = None
                 st.session_state.data_oferta_curenta = ""
+                st.session_state.editing_offer_id = None
                 st.session_state.page = "configurator"
                 st.rerun()
         if st.button("CĂUTARE CLIENT", use_container_width=True):
@@ -1129,7 +1209,7 @@ def render_configurator() -> None:
     max_disc = max(0, min(50, int(priv[1] or 15)))
     readonly = st.session_state.readonly_offer
 
-    render_sidebar_nav()
+    render_sidebar_nav(db, priv)
 
     if st.session_state.sidebar_view == "istoric":
         _render_istoric_panel(db)
@@ -1137,6 +1217,12 @@ def render_configurator() -> None:
         if callable(close_conn):
             close_conn()
         return
+    eid_banner = st.session_state.get("editing_offer_id")
+    if eid_banner:
+        st.info(
+            f"Editați oferta **#{eid_banner}**. La salvare se actualizează aceeași înregistrare (fără duplicat); "
+            f"în istoric va apărea **Modificat** cu utilizatorul curent."
+        )
     if st.session_state.sidebar_view == "cautare":
         _render_cautare_panel(db)
         close_conn = getattr(db.conn, "close", None)
@@ -1418,29 +1504,55 @@ def render_configurator() -> None:
                                         c["email"],
                                         datetime.now().strftime("%Y-%m-%d"),
                                     )
+                                eid = st.session_state.get("editing_offer_id")
+                                if eid:
+                                    data_s = (st.session_state.data_oferta_curenta or "").strip() or data_s
+                                mod_la = datetime.now().strftime("%Y-%m-%d %H:%M")
                                 detalii = dumps_offer_items(
                                     st.session_state.cos,
                                     mentiuni=st.session_state.mentiuni,
                                     afiseaza_mentiuni_pdf=st.session_state.afiseaza_mentiuni_pdf,
                                     conditii_pdf=st.session_state.conditii_pdf,
                                     termen_livrare_zile=_parse_termen_livrare_zile(st.session_state.termen_livrare),
+                                    modificat_de=(st.session_state.logged_user if eid else None),
+                                    modificat_la=(mod_la if eid else None),
                                 )
-                                oid = insert_offer(
-                                    db.conn,
-                                    cursor,
-                                    id_client=cid,
-                                    detalii_oferta=detalii,
-                                    total_lei=totals["ultima_valoare_lei"],
-                                    data_oferta=data_s,
-                                    nume_client_temp=c["nume"],
-                                    utilizator_creat=st.session_state.logged_user,
-                                    discount_proc=dproc,
-                                    curs_euro=st.session_state.curs_euro,
-                                    safe_mode_enabled=1 if st.session_state.safe_mode else 0,
-                                )
-                                st.session_state.id_oferta_curenta = oid
-                                st.session_state.data_oferta_curenta = data_s
-                                st.success(f"Ofertă salvată (#{oid}).")
+                                if eid:
+                                    update_offer_full(
+                                        db.conn,
+                                        cursor,
+                                        offer_id=int(eid),
+                                        id_client=cid,
+                                        detalii_oferta=detalii,
+                                        total_lei=totals["ultima_valoare_lei"],
+                                        data_oferta=data_s,
+                                        nume_client_temp=c["nume"],
+                                        discount_proc=dproc,
+                                        curs_euro=st.session_state.curs_euro,
+                                        safe_mode_enabled=1 if st.session_state.safe_mode else 0,
+                                    )
+                                    st.session_state.id_oferta_curenta = int(eid)
+                                    st.session_state.data_oferta_curenta = data_s
+                                    st.success(
+                                        f"Ofertă actualizată (#{eid}). Modificată de {st.session_state.logged_user}."
+                                    )
+                                else:
+                                    oid = insert_offer(
+                                        db.conn,
+                                        cursor,
+                                        id_client=cid,
+                                        detalii_oferta=detalii,
+                                        total_lei=totals["ultima_valoare_lei"],
+                                        data_oferta=data_s,
+                                        nume_client_temp=c["nume"],
+                                        utilizator_creat=st.session_state.logged_user,
+                                        discount_proc=dproc,
+                                        curs_euro=st.session_state.curs_euro,
+                                        safe_mode_enabled=1 if st.session_state.safe_mode else 0,
+                                    )
+                                    st.session_state.id_oferta_curenta = oid
+                                    st.session_state.data_oferta_curenta = data_s
+                                    st.success(f"Ofertă salvată (#{oid}).")
                             except Exception as e:
                                 st.error(f"Eroare salvare: {e}")
             with btn_pdf:
@@ -1528,6 +1640,7 @@ def render_dev_pw() -> None:
             st.session_state.dev_mode = True
             st.session_state.readonly_offer = False
             st.session_state.cos = []
+            st.session_state.editing_offer_id = None
             st.session_state.client["nume"] = "Dev Mode"
             st.session_state.client["tel"] = "0712345678"
             st.session_state.page = "configurator"

@@ -57,6 +57,13 @@ def get_categorii_list():
 def apply_custom_css():
     st.markdown(f"""
     <style>
+        .stApp {{
+            background-color: {CORP_WINDOW_BG};
+            color: #eceff1;
+        }}
+        div[data-testid="stHeader"] {{
+            background-color: #1a1a1a;
+        }}
         .main-header {{
             background-color: {CORP_FRAME_BG};
             padding: 1rem;

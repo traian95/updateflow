@@ -18,6 +18,7 @@ import customtkinter as ctk
 import pandas as pd
 from CTkMessagebox import CTkMessagebox
 from PIL import Image, ImageSequence
+import tkinter as tk
 from tkinter import filedialog
 
 from .auth_utils import hash_parola as _hash_parola
@@ -57,18 +58,19 @@ from .db import (
     get_approved_users_with_privileges,
     init_schema,
     insert_client,
+    get_offer_snapshot,
     insert_offer,
     open_db,
     search_produse,
     update_avans,
     update_offer_detalii,
+    update_offer_full,
     delete_offer,
 )
 from .paths import resolve_asset_path
 from .pdf_export import apply_majuscule_line_stoc_erkado, build_oferta_pret_pdf
-from .serialization import dumps_offer_items, loads_offer_items
+from .serialization import dumps_offer_items, get_offer_modificare_meta, loads_offer_items
 from .services import fetch_bnr_eur_rate
-from .agent_debug_log import append_agent_debug_ndjson
 from .updater import check_for_updates, get_local_version, install_zip_update
 
 logger = logging.getLogger(__name__)
@@ -96,32 +98,6 @@ BORDER_GRAY = "#444444"
 INPUT_BORDER_GRAY = "#444444"
 RADIO_ACCENT = "#546E7A"
 RADIO_ACCENT_HOVER = "#455A64"
-
-_DEBUG_LOG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "debug-4d10ac.log"))
-
-
-def _debug_session_ndjson(
-    hypothesis_id: str,
-    location: str,
-    message: str,
-    data: dict | None = None,
-    run_id: str = "pre-fix",
-) -> None:
-    # #region agent log
-    append_agent_debug_ndjson(
-        session_id="88fd1f",
-        run_id=run_id,
-        hypothesis_id=hypothesis_id,
-        location=location,
-        message=message,
-        data=data,
-    )
-    # #endregion
-
-
-def _agent_debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    return
-
 
 # Decoruri cu sufix LAMINAT (nu INOVA 3D) – afișare uși Stoc.
 _DECOR_STOC_AFISARE_LAMINAT = frozenset({
@@ -270,6 +246,93 @@ def _patch_centered_toplevel_geometry() -> None:
 _patch_centered_toplevel_geometry()
 
 
+def _apply_tk_window_chrome_dark(win: ctk.CTk | ctk.CTkToplevel) -> None:
+    """Setează culoarea implicită Tk pentru widget-uri native (margins/canvas), reduce flash alb."""
+    try:
+        win.tk_setPalette(background=CORP_WINDOW_BG)
+    except Exception:
+        pass
+
+
+def _patch_scrollable_frame_canvas(sf, bg_hex: str | None = None) -> None:
+    """Aliniază fundalul real al canvas-ului Tk din CTkScrollableFrame cu tema (marginile lăsate de grid)."""
+    if sf is None:
+        return
+    try:
+        color = bg_hex
+        if not color:
+            pf = getattr(sf, "_parent_frame", None)
+            if pf is not None:
+                try:
+                    fc = pf.cget("fg_color")
+                    if fc is not None and str(fc).lower() != "transparent":
+                        color = str(fc)
+                except Exception:
+                    pass
+        if not color:
+            color = CORP_WINDOW_BG
+        cvs = getattr(sf, "_parent_canvas", None)
+        if cvs is not None:
+            cvs.configure(bg=color, highlightthickness=0)
+        tk.Frame.configure(sf, bg=color)
+    except Exception:
+        pass
+
+
+def _center_dialog_on_screen(win: ctk.CTkToplevel) -> None:
+    """Reposition a small dialog to the visual center of the primary monitor."""
+    try:
+        if not win.winfo_exists():
+            return
+        win.update_idletasks()
+        w = max(int(win.winfo_width()), 1)
+        h = max(int(win.winfo_height()), 1)
+        sw = win.winfo_screenwidth()
+        sh = win.winfo_screenheight()
+        x = max((sw - w) // 2, 0)
+        y = max((sh - h) // 2, 0)
+        _ORIGINAL_CTK_TOPLEVEL_GEOMETRY(win, f"{w}x{h}+{x}+{y}")
+    except Exception:
+        pass
+
+
+_CTK_MESSAGEBOX_ORIG_INIT = CTkMessagebox.__init__
+
+
+def _CTkMessagebox_init_screen_centered(self, master=None, **kwargs):
+    _CTK_MESSAGEBOX_ORIG_INIT(self, master=master, **kwargs)
+    self.after(25, lambda w=self: _center_dialog_on_screen(w))
+
+
+CTkMessagebox.__init__ = _CTkMessagebox_init_screen_centered
+
+_CTK_INPUT_ORIG_CREATE_WIDGETS = ctk.CTkInputDialog._create_widgets
+
+
+def _CTkInputDialog_create_widgets_centered(self):
+    _CTK_INPUT_ORIG_CREATE_WIDGETS(self)
+    self.after(40, lambda w=self: _center_dialog_on_screen(w))
+
+
+ctk.CTkInputDialog._create_widgets = _CTkInputDialog_create_widgets_centered
+
+
+def _apply_fullscreen_workspace(win: ctk.CTk | ctk.CTkToplevel) -> None:
+    """Fill the primary screen and maximize (Windows); geometry uses +0+0 so the centering patch is skipped."""
+    try:
+        win.update_idletasks()
+        sw = max(win.winfo_screenwidth(), 800)
+        sh = max(win.winfo_screenheight(), 600)
+        win.geometry(f"{sw}x{sh}+0+0")
+    except Exception:
+        pass
+    if os.name == "nt":
+        try:
+            win.state("zoomed")
+        except Exception:
+            pass
+
+
 class Preloader(ctk.CTk):
     def __init__(self, callback):
         super().__init__()
@@ -284,6 +347,7 @@ class Preloader(ctk.CTk):
         self.overrideredirect(True)
         self.attributes("-topmost", True)
         self.configure(fg_color=CORP_WINDOW_BG)
+        _apply_tk_window_chrome_dark(self)
 
         cale_logo = resolve_asset_path("Naturen2.png")
 
@@ -311,13 +375,15 @@ class Preloader(ctk.CTk):
 
 
 class LoginWindow(ctk.CTk):
-    def __init__(self, on_success):
+    def __init__(self):
         super().__init__()
-        self.on_success = on_success
+        self._auth_user: str | None = None
         self._logged_user = None
         self._login_in_progress = False
         self.cale_logo = resolve_asset_path("Naturen2.png")
+        self.withdraw()
         self.configure(fg_color=CORP_WINDOW_BG)
+        _apply_tk_window_chrome_dark(self)
 
         self.title("Autentificare")
         # Login: fereastră mică, centrată (dimensiunea originală)
@@ -331,7 +397,13 @@ class LoginWindow(ctk.CTk):
 
         self.container = ctk.CTkFrame(self, fg_color="transparent")
         self.container.pack(expand=True, fill="both", padx=20, pady=20)
+        self.protocol("WM_DELETE_WINDOW", self._on_login_window_close)
         self._build_login_screen()
+        self.after_idle(self.deiconify)
+
+    def _on_login_window_close(self):
+        self._auth_user = None
+        self.quit()
 
     def _build_login_screen(self):
         for w in self.container.winfo_children():
@@ -401,8 +473,8 @@ class LoginWindow(ctk.CTk):
     def _trece_la_app(self):
         if hasattr(self, "_progress") and self._progress.winfo_exists():
             self._progress.stop()
-        self.destroy()
-        self.on_success(self._logged_user)
+        self._auth_user = self._logged_user
+        self.quit()
 
     def _verifica_login(self):
         if self._login_in_progress:
@@ -478,7 +550,10 @@ class LoginWindow(ctk.CTk):
 class AplicatieOfertare(ctk.CTk):
     def __init__(self, config: AppConfig | None = None, utilizator_creat: str = "", on_logout=None):
         super().__init__()
+        self.withdraw()
         self.configure(fg_color=CORP_WINDOW_BG)
+        _apply_tk_window_chrome_dark(self)
+        self._want_login_again = False
 
         self.config_app = config or AppConfig()
         self.APP_VERSION = get_local_version()
@@ -492,6 +567,11 @@ class AplicatieOfertare(ctk.CTk):
         ecran_i = self.winfo_screenheight()
         self.geometry(f"{ecran_l}x{ecran_i}+0+0")
         self.resizable(True, True)
+        if os.name == "nt":
+            try:
+                self.state("zoomed")
+            except Exception:
+                logger.exception("Nu s-a putut seta fereastra principală în mod maximizat (zoomed).")
 
         self.cale_proiect = os.path.dirname(resolve_asset_path("dummy"))
         self.nume_db = get_database_path()
@@ -510,6 +590,7 @@ class AplicatieOfertare(ctk.CTk):
         self._after_id_filtreaza = None
         self._after_id_filtreaza_parchet = None
         self._after_id_istoric = None
+        self._after_id_cautare_clienti = None
         self._after_id_discount_refresh = None
         self._discount_ignore_trace_writes = 0
         self._search_result_pending = None
@@ -584,7 +665,13 @@ class AplicatieOfertare(ctk.CTk):
         self._can_see_all = bool(get_user_can_see_all(self.cursor, self.utilizator_creat)) if self.utilizator_creat else False
 
         def _cleanup_and_destroy():
-            for aid in (self._after_id_cauta_produs, self._after_id_filtreaza, self._after_id_filtreaza_parchet, self._after_id_istoric):
+            for aid in (
+                self._after_id_cauta_produs,
+                self._after_id_filtreaza,
+                self._after_id_filtreaza_parchet,
+                self._after_id_istoric,
+                self._after_id_cautare_clienti,
+            ):
                 if aid is not None:
                     try:
                         self.after_cancel(aid)
@@ -594,6 +681,7 @@ class AplicatieOfertare(ctk.CTk):
             self._after_id_filtreaza = None
             self._after_id_filtreaza_parchet = None
             self._after_id_istoric = None
+            self._after_id_cautare_clienti = None
             self._search_result_pending = None
             try:
                 self.conn.close()
@@ -602,9 +690,11 @@ class AplicatieOfertare(ctk.CTk):
             self.destroy()
 
         def _on_close():
+            self._want_login_again = False
             _cleanup_and_destroy()
 
         def _do_logout():
+            self._want_login_again = True
             _cleanup_and_destroy()
             if callable(self._on_logout):
                 self._on_logout()
@@ -616,6 +706,7 @@ class AplicatieOfertare(ctk.CTk):
         self.show_ecran_start()
         self._version_alert_bar = None
         self.after(100, self.check_app_version)
+        self.after_idle(self.deiconify)
 
     def _style_modern_frame(self, frame: ctk.CTkFrame) -> None:
         frame.configure(
@@ -772,21 +863,6 @@ class AplicatieOfertare(ctk.CTk):
         self.after(0, lambda: self._on_check_app_version_done(result))
 
     def _on_check_app_version_done(self, result: dict[str, Any]) -> None:
-        # #region agent log
-        _debug_session_ndjson(
-            "B_UI",
-            "ui.py:_on_check_app_version_done",
-            "version_check_ui",
-            {
-                "winfo_exists": bool(self.winfo_exists()),
-                "update_available": bool(result.get("update_available")),
-                "reason": str(result.get("reason") or ""),
-                "version_local": str(result.get("version_local") or ""),
-                "version_cloud": str(result.get("version_cloud") or ""),
-                "version_source": str(result.get("version_source") or ""),
-            },
-        )
-        # #endregion
         if not self.winfo_exists():
             return
         if str(result.get("reason") or "").strip().lower() == "error":
@@ -1145,20 +1221,6 @@ class AplicatieOfertare(ctk.CTk):
             return
         id_oferta = getattr(self, "id_oferta_curenta", None)
         data_oferta_pdf = (getattr(self, "data_oferta_curenta", "") or "").strip()
-        # #region agent log
-        _agent_debug_log(
-            run_id="pre-fix",
-            hypothesis_id="H1",
-            location="ui.py:genereaza_pdf:id_context",
-            message="Context ID ofertă înainte de fallback DB",
-            data={
-                "id_oferta_curenta": id_oferta,
-                "data_oferta_curenta": data_oferta_pdf,
-                "nume_client": (nume_client or "").strip(),
-                "utilizator_creat": (self.utilizator_creat or "").strip(),
-            },
-        )
-        # #endregion
         if not data_oferta_pdf:
             # Fallback sigur: dacă nu avem data comenzii în context, folosim data curentă.
             data_oferta_pdf = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -1173,54 +1235,12 @@ class AplicatieOfertare(ctk.CTk):
                 sql += " ORDER BY id DESC LIMIT 1"
                 self.cursor.execute(sql, tuple(params))
                 row = self.cursor.fetchone()
-                # #region agent log
-                _agent_debug_log(
-                    run_id="pre-fix",
-                    hypothesis_id="H2",
-                    location="ui.py:genereaza_pdf:id_recovery_query",
-                    message="Rezultat query recuperare id ofertă",
-                    data={
-                        "sql": sql,
-                        "params": params,
-                        "row": row,
-                    },
-                )
-                # #endregion
-                # #region agent log
-                self.cursor.execute(
-                    f"SELECT id, data_oferta FROM {TABLE_OFERTE} WHERE nume_client_temp = ? ORDER BY id DESC LIMIT 3",
-                    (nume_client.strip(),),
-                )
-                rows_by_client = self.cursor.fetchall()
-                _agent_debug_log(
-                    run_id="pre-fix",
-                    hypothesis_id="H8",
-                    location="ui.py:genereaza_pdf:offers_by_client_probe",
-                    message="Probe oferte recente după nume_client_temp",
-                    data={
-                        "nume_client": (nume_client or "").strip(),
-                        "rows_by_client": rows_by_client,
-                    },
-                )
-                # #endregion
                 if row and row[0]:
                     id_oferta = row[0]
                     self.id_oferta_curenta = id_oferta
             except Exception:
                 logger.exception("Recuperare id ofertă pentru PDF eșuată")
         nr_inreg = str(id_oferta).zfill(5) if id_oferta else "-"
-        # #region agent log
-        _agent_debug_log(
-            run_id="pre-fix",
-            hypothesis_id="H3",
-            location="ui.py:genereaza_pdf:nr_inreg_build",
-            message="Valoare nr_inreg înainte de export PDF",
-            data={
-                "id_oferta_final": id_oferta,
-                "nr_inreg": nr_inreg,
-            },
-        )
-        # #endregion
         disc_proc = self._get_discount_proc()
         # Date de contact afișate în PDF – telefonul userului logat (din profil), altfel fallback universal
         contact = self._CONTACT_UTILIZATOR_PDF.get("_universal")
@@ -1271,18 +1291,6 @@ class AplicatieOfertare(ctk.CTk):
                 aplica_adaugiri_denumire=conditii_pdf_activ,
                 data_comanda=data_oferta_pdf,
             )
-            # #region agent log
-            _agent_debug_log(
-                run_id="pre-fix",
-                hypothesis_id="H4",
-                location="ui.py:genereaza_pdf:build_called",
-                message="build_oferta_pret_pdf apelat cu nr_inreg",
-                data={
-                    "nr_inreg": nr_inreg,
-                    "cale_salvare": cale_salvare,
-                },
-            )
-            # #endregion
             self.afiseaza_mesaj("Succes", "PDF generat cu succes!", "#2E7D32")
         except Exception as e:
             logger.exception("Generare PDF eșuată")
@@ -1406,7 +1414,7 @@ class AplicatieOfertare(ctk.CTk):
             corner_radius=4,
             command=self._do_logout,
         ).pack(side="left", padx=(0, 10), pady=8)
-        main_content = ctk.CTkFrame(self, fg_color="transparent", width=1100, height=590)
+        main_content = ctk.CTkFrame(self, fg_color=CORP_WINDOW_BG, width=1100, height=590)
         main_content.place(relx=0.5, rely=0.53, anchor="center")
         main_content.grid_propagate(False)
         main_content.grid_columnconfigure(0, weight=1, uniform="grupa_casete")
@@ -1536,8 +1544,9 @@ class AplicatieOfertare(ctk.CTk):
         ctk.CTkLabel(
             f_cautare_pret_inner, text="Rezultate (preț EUR / LEI la curs curent):", font=("Segoe UI", 11), text_color="#aaaaaa"
         ).grid(row=2, column=0, sticky="nw", pady=(0, 5))
-        self.scroll_pret_produse = ctk.CTkScrollableFrame(f_cautare_pret_inner, fg_color="transparent")
+        self.scroll_pret_produse = ctk.CTkScrollableFrame(f_cautare_pret_inner, fg_color=CORP_WINDOW_BG)
         self.scroll_pret_produse.grid(row=3, column=0, sticky="nsew", pady=(0, 0))
+        _patch_scrollable_frame_canvas(self.scroll_pret_produse, CORP_WINDOW_BG)
         self.refresh_lista_pret_produse()
 
         f_curs_container = ctk.CTkFrame(self, fg_color="transparent")
@@ -1805,7 +1814,9 @@ class AplicatieOfertare(ctk.CTk):
     def deschide_cautare_client(self, nume_precompletat=None):
         self.win_cautare = ctk.CTkToplevel(self)
         self.win_cautare.title("Bază de Date Clienți")
-        self.win_cautare.geometry("1200x800")
+        self.win_cautare.configure(fg_color=CORP_WINDOW_BG)
+        _apply_tk_window_chrome_dark(self.win_cautare)
+        _apply_fullscreen_workspace(self.win_cautare)
         self.win_cautare.grab_set()
 
         f_filtre = ctk.CTkFrame(self.win_cautare)
@@ -1822,36 +1833,135 @@ class AplicatieOfertare(ctk.CTk):
         self.combo_interval = ctk.CTkComboBox(
             f_filtre,
             values=["Toate", "Ultima Săptămână", "Ultima Lună", "Ultimul An"],
-            command=lambda x: self.refresh_tabel_clienti(),
+            command=lambda _x: self._refresh_tabel_clienti_immediate(),
         )
         self.combo_interval.set("Toate")
         self.combo_interval.grid(row=0, column=3, padx=10, pady=10)
 
-        f_header = ctk.CTkFrame(self.win_cautare, fg_color="#2D2D2D", height=38)
+        f_header = ctk.CTkFrame(self.win_cautare, fg_color="#2D2D2D", height=38, corner_radius=4)
         f_header.pack(fill="x", padx=20, pady=(0, 4))
         f_header.pack_propagate(False)
         headers = [
             ("Nume Client", 0.02, "w"),
             ("Adresă", 0.30, "w"),
             ("Telefon", 0.58, "w"),
-            ("Nr. oferte", 0.73, "w"),
-            ("Acțiuni", 0.85, "center"),
+            ("Nr. oferte", 0.96, "e"),
         ]
         for text, rel_x, anchor in headers:
             lbl = ctk.CTkLabel(f_header, text=text, font=("Segoe UI", 12), text_color="#2E7D32")
             lbl.place(relx=rel_x, rely=0.5, anchor=anchor)
 
-        self.scroll_tabel = ctk.CTkScrollableFrame(self.win_cautare, fg_color="transparent")
-        self.scroll_tabel.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+        ctk.CTkLabel(
+            self.win_cautare,
+            text="Selectați un rând, apoi «Detalii / Oferte» — dublu-click deschide direct.",
+            text_color="#aaaaaa",
+            font=("Segoe UI", 12),
+            anchor="w",
+        ).pack(fill="x", padx=24, pady=(0, 4))
 
+        self.scroll_tabel = ctk.CTkScrollableFrame(self.win_cautare, fg_color=CORP_WINDOW_BG)
+        self.scroll_tabel.pack(fill="both", expand=True, padx=20, pady=(0, 6))
+        _patch_scrollable_frame_canvas(self.scroll_tabel, CORP_WINDOW_BG)
+
+        cautare_actions = ctk.CTkFrame(self.win_cautare, fg_color="#2D2D2D", border_width=1, border_color="#333333")
+        cautare_actions.pack(fill="x", padx=20, pady=(0, 10))
+        self._cautare_btn_detalii = ctk.CTkButton(
+            cautare_actions,
+            text="Detalii / Oferte",
+            width=160,
+            fg_color="#2E7D32",
+            hover_color="#256B29",
+            state="disabled",
+            command=self._cautare_action_detalii,
+        )
+        self._cautare_btn_detalii.pack(side="left", padx=12, pady=10)
+
+        def _on_cautare_destroy(event):
+            if event.widget != self.win_cautare:
+                return
+            if self._after_id_cautare_clienti is not None:
+                try:
+                    self.after_cancel(self._after_id_cautare_clienti)
+                except Exception:
+                    pass
+                self._after_id_cautare_clienti = None
+
+        self.win_cautare.bind("<Destroy>", _on_cautare_destroy)
+
+        self._cautare_row_pool = None
+        self._refresh_tabel_clienti_immediate()
+
+    def _refresh_tabel_clienti_immediate(self):
+        if self._after_id_cautare_clienti is not None:
+            try:
+                self.after_cancel(self._after_id_cautare_clienti)
+            except Exception:
+                pass
+            self._after_id_cautare_clienti = None
         self.refresh_tabel_clienti()
 
     def update_autosuggestion(self, event):
+        if self._after_id_cautare_clienti is not None:
+            try:
+                self.after_cancel(self._after_id_cautare_clienti)
+            except Exception:
+                pass
+        self._after_id_cautare_clienti = self.after(250, self._do_refresh_tabel_clienti)
+
+    def _do_refresh_tabel_clienti(self):
+        self._after_id_cautare_clienti = None
+        st = getattr(self, "scroll_tabel", None)
+        if st is None:
+            return
+        try:
+            if not st.winfo_exists():
+                return
+        except Exception:
+            return
         self.refresh_tabel_clienti()
 
+    def _cautare_set_selected_row(self, idx: int | None) -> None:
+        self._cautare_selected_idx = idx
+        frames = getattr(self, "_cautare_row_frames", None) or []
+        for i, f in enumerate(frames):
+            try:
+                if f.winfo_exists():
+                    f.configure(fg_color="#1e4620" if (idx is not None and i == idx) else "#2b2b2b")
+            except Exception:
+                pass
+        btn = getattr(self, "_cautare_btn_detalii", None)
+        if btn is not None:
+            try:
+                if btn.winfo_exists():
+                    btn.configure(state="normal" if idx is not None else "disabled")
+            except Exception:
+                pass
+
+    def _cautare_current_client_id(self):
+        idx = getattr(self, "_cautare_selected_idx", None)
+        if idx is None:
+            return None
+        ids = getattr(self, "_cautare_client_ids", None) or []
+        if idx < 0 or idx >= len(ids):
+            return None
+        return ids[idx]
+
+    def _cautare_action_detalii(self):
+        cid = self._cautare_current_client_id()
+        if cid is None:
+            self.afiseaza_mesaj("Atenție", "Selectați un client din listă.", "#F57C00")
+            return
+        self._deschide_detalii_client(cid)
+
     def refresh_tabel_clienti(self):
-        for w in self.scroll_tabel.winfo_children():
-            w.destroy()
+        st = getattr(self, "scroll_tabel", None)
+        if st is None:
+            return
+        try:
+            if not st.winfo_exists():
+                return
+        except Exception:
+            return
 
         search_term = f"%{self.ent_search_client.get()}%"
         interval = self.combo_interval.get()
@@ -1863,24 +1973,74 @@ class AplicatieOfertare(ctk.CTk):
             self.cursor, search_term, data_min, utilizator_creat=self.utilizator_creat or None
         )
 
-        for r in date_clienti:
-            client_id, nume, adresa, tel, nr_oferte = r
-            row_f = ctk.CTkFrame(self.scroll_tabel, height=44, fg_color="#2b2b2b")
-            row_f.pack(fill="x", pady=1)
+        pool = getattr(self, "_cautare_row_pool", None)
+        if pool is None:
+            self._cautare_row_pool = []
+            pool = self._cautare_row_pool
+        for cell in pool:
+            try:
+                cell["frame"].pack_forget()
+            except Exception:
+                pass
+
+        self._cautare_client_ids = [r[0] for r in date_clienti]
+        self._cautare_selected_idx = None
+
+        _font_row = ("Segoe UI", 12)
+        _font_name = ("Segoe UI", 12, "bold")
+        _muted = "#9E9E9E"
+
+        while len(pool) < len(date_clienti):
+            row_f = ctk.CTkFrame(st, height=44, fg_color="#2b2b2b", corner_radius=4)
             row_f.pack_propagate(False)
+            lbl_n = ctk.CTkLabel(row_f, text="", font=_font_name, anchor="w")
+            lbl_n.place(relx=0.02, rely=0.5, anchor="w")
+            lbl_a = ctk.CTkLabel(row_f, text="", font=_font_row, text_color=_muted, anchor="w")
+            lbl_a.place(relx=0.30, rely=0.5, anchor="w")
+            lbl_t = ctk.CTkLabel(row_f, text="", font=_font_row, anchor="w")
+            lbl_t.place(relx=0.58, rely=0.5, anchor="w")
+            lbl_no = ctk.CTkLabel(row_f, text="", font=_font_row, text_color=_muted, anchor="e")
+            lbl_no.place(relx=0.98, rely=0.5, anchor="e")
+            pool.append({"frame": row_f, "lbl_n": lbl_n, "lbl_a": lbl_a, "lbl_t": lbl_t, "lbl_no": lbl_no})
 
-            ctk.CTkLabel(row_f, text=str(nume).upper()).place(relx=0.02, rely=0.5, anchor="w")
-            ctk.CTkLabel(row_f, text=str(adresa or "")).place(relx=0.30, rely=0.5, anchor="w")
-            ctk.CTkLabel(row_f, text=str(tel or "")).place(relx=0.58, rely=0.5, anchor="w")
-            ctk.CTkLabel(row_f, text=str(nr_oferte)).place(relx=0.73, rely=0.5, anchor="w")
-            ctk.CTkButton(
-                row_f, text="Detalii / Oferte", width=140, height=28, fg_color="#2E7D32",
-                command=lambda cid=client_id: self._deschide_detalii_client(cid),
-            ).place(relx=0.85, rely=0.5, anchor="center")
+        self._cautare_row_frames = []
+        for i, r in enumerate(date_clienti):
+            _cid, nume, adresa, tel, nr_oferte = r
+            cell = pool[i]
+            row_f = cell["frame"]
+            cell["lbl_n"].configure(text=str(nume).upper())
+            cell["lbl_a"].configure(text=str(adresa or ""))
+            cell["lbl_t"].configure(text=str(tel or ""))
+            cell["lbl_no"].configure(text=str(nr_oferte))
+            row_f.configure(fg_color="#2b2b2b")
+            row_f.pack(fill="x", pady=1)
+            self._cautare_row_frames.append(row_f)
 
-        # După refresh, lista trebuie să înceapă de sus pentru a evita "goluri" vizuale.
+            def _bind_cautare_row(idx: int):
+                def _select(_event=None):
+                    self._cautare_set_selected_row(idx)
+
+                def _double(_event=None):
+                    self._cautare_set_selected_row(idx)
+                    self._cautare_action_detalii()
+
+                return _select, _double
+
+            _sel, _dbl = _bind_cautare_row(i)
+            for w in (row_f, cell["lbl_n"], cell["lbl_a"], cell["lbl_t"], cell["lbl_no"]):
+                w.bind("<Button-1>", _sel)
+                w.bind("<Double-Button-1>", _dbl)
+
+        btn = getattr(self, "_cautare_btn_detalii", None)
+        if btn is not None:
+            try:
+                if btn.winfo_exists():
+                    btn.configure(state="disabled")
+            except Exception:
+                pass
+
         try:
-            self.scroll_tabel._parent_canvas.yview_moveto(0)
+            st._parent_canvas.yview_moveto(0)
         except Exception:
             pass
 
@@ -1897,6 +2057,8 @@ class AplicatieOfertare(ctk.CTk):
         win = ctk.CTkToplevel(self)
         win.title(f"Client: {nume}")
         win.geometry("700x550")
+        win.configure(fg_color=CORP_WINDOW_BG)
+        _apply_tk_window_chrome_dark(win)
         win.grab_set()
         win.transient(self)
 
@@ -1911,8 +2073,9 @@ class AplicatieOfertare(ctk.CTk):
         ctk.CTkLabel(f_info, text=f"Total oferte: {len(oferte)}", font=("Segoe UI", 12)).pack(anchor="w", padx=15, pady=(2, 10))
 
         ctk.CTkLabel(win, text="OFERTE REALIZATE", font=("Segoe UI", 14, "bold"), text_color="#2E7D32").pack(anchor="w", padx=20, pady=(10, 5))
-        scroll = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        scroll = ctk.CTkScrollableFrame(win, fg_color=CORP_WINDOW_BG)
         scroll.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+        _patch_scrollable_frame_canvas(scroll, CORP_WINDOW_BG)
 
         for id_o, data_oferta, total_lei, detalii, avans in oferte:
             f_o = ctk.CTkFrame(scroll, fg_color="#2b2b2b")
@@ -2051,7 +2214,8 @@ class AplicatieOfertare(ctk.CTk):
             return
         self.porneste_ofertarea(dev_mode=True)
 
-    def porneste_ofertarea(self, date_istoric=None, dev_mode=False):
+    def porneste_ofertarea(self, date_istoric=None, dev_mode=False, modifica=False):
+        self._edit_offer_id = None
         self.id_oferta_curenta = None
         self.data_oferta_curenta = ""
         mentiuni_initiale = ""
@@ -2059,7 +2223,8 @@ class AplicatieOfertare(ctk.CTk):
         conditii_pdf_initial = False
         termen_livrare_initial = 0
         if date_istoric:
-            self.id_oferta_curenta = date_istoric.get("id_oferta")
+            oid_hist = date_istoric.get("id_oferta")
+            self.id_oferta_curenta = oid_hist
             self.data_oferta_curenta = (date_istoric.get("data_oferta") or "").strip()
             nume = date_istoric.get("nume", "")
             produse_payload = date_istoric.get("produse", [])
@@ -2072,7 +2237,9 @@ class AplicatieOfertare(ctk.CTk):
                 termen_livrare_initial = str(produse_payload.get("termen_livrare_zile", "0") or "0").strip()
             else:
                 self.cos_cumparaturi = produse_payload
-            readonly = True
+            if modifica and oid_hist:
+                self._edit_offer_id = int(oid_hist)
+            readonly = not modifica
         elif dev_mode:
             nume = "Dev Mode"
             self.cos_cumparaturi = []
@@ -2101,7 +2268,7 @@ class AplicatieOfertare(ctk.CTk):
         # Safe Mode: pornit implicit la fiecare ofertă nou deschisă
         self.safe_mode_enabled = True
 
-        main_layout = ctk.CTkFrame(self.win_oferta, fg_color="transparent")
+        main_layout = ctk.CTkFrame(self.win_oferta, fg_color=CORP_WINDOW_BG)
         main_layout.pack(fill="both", expand=True, padx=10, pady=10)
 
         f_selectie = ctk.CTkFrame(main_layout, width=520)
@@ -2142,8 +2309,9 @@ class AplicatieOfertare(ctk.CTk):
             btn_parchet.pack(side="right", padx=(6, 6))
 
         # Zone derulabile: categorii + servicii suplimentare (ca să fie mereu accesibile)
-        scroll_selectie = ctk.CTkScrollableFrame(f_selectie, fg_color="transparent")
+        scroll_selectie = ctk.CTkScrollableFrame(f_selectie, fg_color=CORP_WINDOW_BG)
         scroll_selectie.pack(fill="both", expand=True, pady=(0, 5))
+        _patch_scrollable_frame_canvas(scroll_selectie, CORP_WINDOW_BG)
         f_selectie_footer = ctk.CTkFrame(f_selectie, fg_color="transparent")
         f_selectie_footer.pack(fill="x", padx=10, pady=(0, 8))
         self.btn_safe_mode = ctk.CTkButton(
@@ -2316,6 +2484,7 @@ class AplicatieOfertare(ctk.CTk):
         frame_tabel.pack(fill="both", expand=True, padx=5)
         self.scroll_cos = ctk.CTkScrollableFrame(frame_tabel, fg_color="#2D2D2D")
         self.scroll_cos.pack(fill="both", expand=True, padx=6, pady=6)
+        _patch_scrollable_frame_canvas(self.scroll_cos, "#2D2D2D")
 
         self.tabview_cos.add("Rezumat ofertă")
         tab_parchet = self.tabview_cos.tab("Rezumat ofertă")
@@ -2363,6 +2532,26 @@ class AplicatieOfertare(ctk.CTk):
         self.combo_discount.bind("<KeyRelease>", lambda e: self._on_discount_keyrelease(e, readonly))
         self.combo_discount.bind("<Return>", lambda e: self._normalize_discount_input(e, readonly))
         self.combo_discount.bind("<FocusOut>", lambda e: self._normalize_discount_input(e, readonly))
+
+        if date_istoric and date_istoric.get("id_oferta"):
+            snap = get_offer_snapshot(self.cursor, int(date_istoric["id_oferta"]))
+            if snap:
+                try:
+                    dproc_snap = int(snap.get("discount_proc") or 0)
+                except (TypeError, ValueError):
+                    dproc_snap = 0
+                ds = str(max(0, min(dproc_snap, max_disc)))
+                if ds not in discount_values:
+                    nums = sorted(int(x) for x in discount_values)
+                    lower = max([n for n in nums if n <= int(ds)], default=0)
+                    ds = str(lower)
+                self.combo_discount.set(ds)
+                try:
+                    self.curs_euro = float(snap.get("curs_euro") or self.curs_euro)
+                except (TypeError, ValueError):
+                    pass
+                self.safe_mode_enabled = bool(int(snap.get("safe_mode_enabled") or 1))
+                self._update_safe_mode_button_ui()
 
         self.frame_rezumat_pret = ctk.CTkFrame(self.f_cos, fg_color="#2D2D2D", corner_radius=4)
         self.frame_rezumat_pret.pack(fill="x", padx=20, pady=(10, 5))
@@ -2715,8 +2904,9 @@ class AplicatieOfertare(ctk.CTk):
         f_right_outer = ctk.CTkFrame(main, fg_color="#363636", corner_radius=4)
         f_right_outer.pack(side="right", fill="both", expand=True, padx=(0, 0))
         self._parchet_popup_header_strip(f_right_outer, "Rezumat calcul", top_rounded=True).pack(fill="x", side="top")
-        f_right = ctk.CTkScrollableFrame(f_right_outer, fg_color="transparent")
+        f_right = ctk.CTkScrollableFrame(f_right_outer, fg_color="#363636")
         f_right.pack(fill="both", expand=True)
+        _patch_scrollable_frame_canvas(f_right, "#363636")
         pad_y = 6
         ctk.CTkLabel(f_right, text="Necesar client (mp):", font=("Segoe UI", 11)).pack(anchor="w", padx=15, pady=(12, pad_y))
         lbl_necesar = ctk.CTkLabel(f_right, text="—", font=("Segoe UI", 13, "bold"))
@@ -3614,15 +3804,6 @@ class AplicatieOfertare(ctk.CTk):
             pairs = get_decor_finisaj_pairs_tocuri(self.cursor, titlu, furnizor, tip_toc, dimensiune)
             fins = [f for _, f in pairs]
             ph_decor = w.get("_ph_decor") or "Alege Finisaj"
-            #region agent log
-            _agent_debug_log(
-                run_id="pre-fix",
-                hypothesis_id="H1",
-                location="ui.py:on_model_select:Tocuri",
-                message="Tocuri finisaje populate",
-                data={"furnizor": furnizor, "tip_toc": tip_toc, "dimensiune": dimensiune, "fins": list(fins)},
-            )
-            #endregion
             if not fins:
                 sample_same_dim = []
                 sample_trim = []
@@ -3653,18 +3834,6 @@ class AplicatieOfertare(ctk.CTk):
                     sample_trim = self.cursor.fetchall()
                 except Exception:
                     pass
-                #region agent log
-                _agent_debug_log(
-                    run_id="pre-fix-3",
-                    hypothesis_id="H7",
-                    location="ui.py:on_model_select:Tocuri",
-                    message="Finisaje empty; sampled decor/finisaj rows",
-                    data={
-                        "same_dim_rows": [list(r) for r in sample_same_dim],
-                        "trim_rows": [list(r) for r in sample_trim],
-                    },
-                )
-                #endregion
             values = [f"{d} / {f}" if d else f for d, f in pairs]
             w["decor_finisaj_pairs"] = pairs
             w["decor_all"] = list(values)
@@ -3754,38 +3923,12 @@ class AplicatieOfertare(ctk.CTk):
             except (ValueError, IndexError):
                 decor, finisaj = "", sel
             ph_decor = w.get("_ph_decor") or "Alege Finisaj"
-            #region agent log
-            _agent_debug_log(
-                run_id="pre-fix",
-                hypothesis_id="H2",
-                location="ui.py:on_decor_select:Tocuri",
-                message="Tocuri finisaj selected before enforcement",
-                data={
-                    "furnizor": furnizor,
-                    "tip_toc": tip_toc,
-                    "dimensiune": dimensiune,
-                    "selected": sel,
-                    "placeholder": ph_decor,
-                    "values": list(w["decor"].cget("values") or []),
-                    "safe_mode": self._is_safe_mode_enabled(),
-                },
-            )
-            #endregion
             if not sel or sel == ph_decor:
                 w["buton"].configure(state="disabled")
                 return
 
             if self._is_safe_mode_enabled():
                 required = self._get_required_toc_option_for_next_toc(furnizor)
-                #region agent log
-                _agent_debug_log(
-                    run_id="pre-fix",
-                    hypothesis_id="H3",
-                    location="ui.py:on_decor_select:Tocuri",
-                    message="Tocuri enforcement check",
-                    data={"selected": sel, "required": required, "will_override": bool(required and sel != required)},
-                )
-                #endregion
                 if required and required in values and sel != required:
                     w["decor"].set(required)
                     sel = required
@@ -3856,16 +3999,6 @@ class AplicatieOfertare(ctk.CTk):
             return
         box.configure(values=all_vals)
         current = (box.get() or "").strip()
-        if titlu == "Tocuri" and field == "decor":
-            #region agent log
-            _agent_debug_log(
-                run_id="pre-fix",
-                hypothesis_id="H4",
-                location="ui.py:_reset_combobox_on_focus_out",
-                message="Tocuri focus out reset decision",
-                data={"current": current, "in_values": current in all_vals, "values_count": len(all_vals)},
-            )
-            #endregion
         if current not in all_vals:
             ph = cfg.get(f"_ph_{field}")
             if ph is not None:
@@ -4312,15 +4445,6 @@ class AplicatieOfertare(ctk.CTk):
         ]
         idx_next = len(tocuri_match)
         if idx_next >= len(usi_match):
-            #region agent log
-            _agent_debug_log(
-                run_id="pre-fix",
-                hypothesis_id="H5",
-                location="ui.py:_get_required_toc_finisaj_for_next_toc",
-                message="No required toc finisaj (not enough Erkado doors)",
-                data={"furnizor": furnizor, "usi": len(usi_match), "tocuri": len(tocuri_match), "idx_next": idx_next},
-            )
-            #endregion
             return None
 
         usa_item = usi_match[idx_next]
@@ -4369,15 +4493,6 @@ class AplicatieOfertare(ctk.CTk):
                 required = values[best_idx]
             elif required_raw not in values:
                 required = None
-        #region agent log
-        _agent_debug_log(
-            run_id="pre-fix",
-            hypothesis_id="H5",
-            location="ui.py:_get_required_toc_finisaj_for_next_toc",
-            message="Computed required toc finisaj",
-            data={"furnizor": furnizor, "usi": len(usi_match), "tocuri": len(tocuri_match), "usa_decor": usa_decor, "usa_finisaj": usa_finisaj, "required": required},
-        )
-        #endregion
         return required
 
     def _get_toc_finisaj_from_item(self, item: dict) -> str | None:
@@ -4768,30 +4883,12 @@ class AplicatieOfertare(ctk.CTk):
             raw = ""
         s = str(raw).strip()
         if not s:
-            #region agent log
-            _agent_debug_log(
-                run_id="pre-fix",
-                hypothesis_id="H1",
-                location="ui.py:_get_discount_proc:empty",
-                message="Discount input empty or whitespace",
-                data={"raw": raw, "parsed": 0},
-            )
-            #endregion
             return 0
         s = s.replace("%", "").strip()
         s = s.replace(",", ".")
         # Extrage primul număr (permite și "50%" / " 50 " / "50,0")
         m = re.search(r"[-+]?\d+(?:\.\d+)?", s)
         if not m:
-            #region agent log
-            _agent_debug_log(
-                run_id="pre-fix",
-                hypothesis_id="H1",
-                location="ui.py:_get_discount_proc:no_match",
-                message="Discount input has no numeric token",
-                data={"raw": raw, "normalized": s, "parsed": 0},
-            )
-            #endregion
             return 0
         try:
             val = float(m.group(0))
@@ -4804,15 +4901,6 @@ class AplicatieOfertare(ctk.CTk):
         # Păstrăm totuși o limită de siguranță.
         val = min(100.0, val)
         parsed = int(val)
-        #region agent log
-        _agent_debug_log(
-            run_id="pre-fix",
-            hypothesis_id="H1",
-            location="ui.py:_get_discount_proc:parsed",
-            message="Discount parsed from UI",
-            data={"raw": raw, "normalized": s, "float_value": val, "parsed_int": parsed},
-        )
-        #endregion
         return parsed
 
     def _is_item_fara_discount(self, item: dict) -> bool:
@@ -4880,21 +4968,6 @@ class AplicatieOfertare(ctk.CTk):
         total_eur_fara_discount = 0.0  # servicii suplimentare
         total_eur_cu_discount = 0.0
         disc_global = self._get_discount_proc()
-        #region agent log
-        _agent_debug_log(
-            run_id="pre-fix",
-            hypothesis_id="H2",
-            location="ui.py:refresh_cos:entry",
-            message="Refresh cos started",
-            data={
-                "readonly": bool(readonly),
-                "items_count": len(self.cos_cumparaturi),
-                "discount_proc": disc_global,
-                "tva_procent": self.tva_procent,
-                "curs_euro": self.curs_euro,
-            },
-        )
-        #endregion
         sum_eng_baza = 0.0
         sum_eng_disc = 0.0
         for i, item in enumerate(self.cos_cumparaturi):
@@ -4930,25 +5003,6 @@ class AplicatieOfertare(ctk.CTk):
                 pret_total_lei_cu_tva = (
                     pret_total_eur * (1 - disc_linie / 100) * (1 + self.tva_procent / 100)
                 ) * self.curs_euro
-            #region agent log
-            _agent_debug_log(
-                run_id="pre-fix",
-                hypothesis_id="H3",
-                location="ui.py:refresh_cos:item",
-                message="Item contribution to totals",
-                data={
-                    "index": i,
-                    "nume": item.get("nume"),
-                    "tip": item.get("tip"),
-                    "pret_eur": pret_eur,
-                    "qty": qty,
-                    "line_total_eur": pret_total_eur,
-                    "is_fara_discount": item_fara_discount,
-                    "disc_linie": disc_linie,
-                    "line_total_lei_tva": round(pret_total_lei_cu_tva, 2),
-                },
-            )
-            #endregion
 
             if not readonly:
                 ctk.CTkButton(
@@ -5145,26 +5199,6 @@ class AplicatieOfertare(ctk.CTk):
         self.ultima_valoare_lei = round(lei_cu_disc + lei_fara_disc_servicii, 2)
         discount_ron = round(total_fara_disc_lei - self.ultima_valoare_lei, 2)
         avans_40 = round(self.ultima_valoare_lei * 0.40, 2)
-        #region agent log
-        _agent_debug_log(
-            run_id="pre-fix",
-            hypothesis_id="H4",
-            location="ui.py:refresh_cos:summary",
-            message="Computed totals before UI labels update",
-            data={
-                "total_eur_all": round(total_eur, 4),
-                "total_eur_discountable": round(total_eur_cu_discount, 4),
-                "total_eur_fara_discount": round(total_eur_fara_discount, 4),
-                "discount_proc": disc,
-                "total_fara_disc_lei": total_fara_disc_lei,
-                "lei_cu_disc": lei_cu_disc,
-                "lei_fara_disc_servicii": lei_fara_disc_servicii,
-                "ultima_valoare_lei": self.ultima_valoare_lei,
-                "discount_ron": discount_ron,
-                "avans_40": avans_40,
-            },
-        )
-        #endregion
         if getattr(self, "lbl_valoare_totala", None) and self.lbl_valoare_totala.winfo_exists():
             self.lbl_valoare_totala.configure(
                 text=f"Valoare totala (TVA INCLUS): {total_fara_disc_lei:.2f} RON"
@@ -5305,7 +5339,9 @@ class AplicatieOfertare(ctk.CTk):
     def deschide_istoric(self):
         self.win_istoric = ctk.CTkToplevel(self)
         self.win_istoric.title("Istoric")
-        self.win_istoric.geometry("1000x700")
+        self.win_istoric.configure(fg_color=CORP_WINDOW_BG)
+        _apply_tk_window_chrome_dark(self.win_istoric)
+        _apply_fullscreen_workspace(self.win_istoric)
         self.win_istoric.grab_set()
         search_f = ctk.CTkFrame(self.win_istoric, fg_color="#2b2b2b")
         search_f.pack(fill="x", padx=20, pady=5)
@@ -5365,8 +5401,73 @@ class AplicatieOfertare(ctk.CTk):
             command=self._reset_istoric_filters,
         ).pack(side="left", padx=(0, 10), pady=10)
 
-        self.scroll_istoric = ctk.CTkScrollableFrame(self.win_istoric)
+        self.scroll_istoric = ctk.CTkFrame(self.win_istoric, fg_color=CORP_WINDOW_BG)
         self.scroll_istoric.pack(fill="both", expand=True, padx=20, pady=10)
+        self._istoric_row_pool = None
+        self._istoric_empty_placeholder = None
+        ctk.CTkLabel(
+            self.scroll_istoric,
+            text="Selectați un rând (dublu-click = Deschide), apoi folosiți butoanele de jos.",
+            text_color="#aaaaaa",
+            font=("Segoe UI", 12),
+            anchor="w",
+        ).pack(fill="x", padx=8, pady=(0, 6))
+        _hdr_i = ctk.CTkFrame(self.scroll_istoric, fg_color="#2D2D2D", height=38, corner_radius=4)
+        _hdr_i.pack(fill="x", padx=4, pady=(0, 4))
+        _hdr_i.pack_propagate(False)
+        for text, rel_x, anchor in (
+            ("Client", 0.02, "w"),
+            ("Data", 0.28, "w"),
+            ("Consultant", 0.46, "w"),
+            ("Nr. înreg.", 0.62, "w"),
+            ("Total", 0.72, "w"),
+            ("Status", 0.98, "e"),
+        ):
+            ctk.CTkLabel(_hdr_i, text=text, font=("Segoe UI", 12), text_color="#2E7D32").place(
+                relx=rel_x, rely=0.5, anchor=anchor
+            )
+        self._istoric_list_scroll = ctk.CTkScrollableFrame(self.scroll_istoric, fg_color=CORP_WINDOW_BG)
+        self._istoric_list_scroll.pack(fill="both", expand=True, padx=4, pady=0)
+        _patch_scrollable_frame_canvas(self._istoric_list_scroll, CORP_WINDOW_BG)
+        _can_del = self._privileges[2] if self._privileges else 1
+        _actions_i = ctk.CTkFrame(self.scroll_istoric, fg_color="#2D2D2D", border_width=1, border_color="#333333")
+        _actions_i.pack(fill="x", pady=(8, 0), padx=5)
+        self._istoric_btn_open = ctk.CTkButton(
+            _actions_i, text="DESCHIDE", width=100, command=self._istoric_action_deschide
+        )
+        self._istoric_btn_open.pack(side="left", padx=6, pady=8)
+        self._istoric_btn_modifica = ctk.CTkButton(
+            _actions_i,
+            text="MODIFICĂ OFERTA",
+            width=140,
+            fg_color="#1565C0",
+            hover_color="#0D47A1",
+            command=self._istoric_action_modifica,
+        )
+        self._istoric_btn_modifica.pack(side="left", padx=6, pady=8)
+        self._istoric_btn_pdf = ctk.CTkButton(
+            _actions_i,
+            text="DESCARCĂ PDF",
+            width=130,
+            fg_color=AMBER_CORP,
+            hover_color=AMBER_HOVER,
+            command=self._istoric_action_pdf,
+        )
+        self._istoric_btn_pdf.pack(side="left", padx=6, pady=8)
+        self._istoric_btn_avans = ctk.CTkButton(
+            _actions_i, text="Avans încasat", width=140, command=self._istoric_action_avans
+        )
+        self._istoric_btn_avans.pack(side="left", padx=6, pady=8)
+        self._istoric_btn_del = None
+        if _can_del:
+            self._istoric_btn_del = ctk.CTkButton(
+                _actions_i,
+                text="Șterge oferta",
+                width=110,
+                fg_color="#7a1a1a",
+                command=self._istoric_action_sterge,
+            )
+            self._istoric_btn_del.pack(side="left", padx=6, pady=8)
         self.refresh_lista_istoric()
 
     def _get_istoric_user_map(self):
@@ -5435,8 +5536,15 @@ class AplicatieOfertare(ctk.CTk):
         self.refresh_lista_istoric()
 
     def refresh_lista_istoric(self):
-        for w in self.scroll_istoric.winfo_children():
-            w.destroy()
+        list_scroll = getattr(self, "_istoric_list_scroll", None)
+        if list_scroll is None:
+            return
+        try:
+            if not list_scroll.winfo_exists():
+                return
+        except Exception:
+            return
+
         termen_raw = self.ent_cauta_istoric.get().strip()
         id_egal = int(termen_raw) if termen_raw.isdigit() else None
         data_start = self._normalize_istoric_date_input(self.ent_data_start_istoric.get() if getattr(self, "ent_data_start_istoric", None) else "")
@@ -5445,69 +5553,231 @@ class AplicatieOfertare(ctk.CTk):
         if getattr(self, "opt_user_istoric", None):
             selected_user = self._istoric_user_map.get((self.opt_user_istoric.get() or "").strip(), "")
 
-        header = ctk.CTkFrame(self.scroll_istoric, fg_color="#2D2D2D", border_width=1, border_color="#333333")
-        header.pack(fill="x", pady=(0, 6), padx=5)
-        ctk.CTkLabel(header, text="Dată", width=190, anchor="w", text_color="#bbbbbb").pack(side="left", padx=(12, 4), pady=8)
-        ctk.CTkLabel(header, text="CONSULTANT", width=170, anchor="w", text_color="#bbbbbb").pack(side="left", padx=4, pady=8)
-        ctk.CTkLabel(header, text="Client", width=230, anchor="w", text_color="#bbbbbb").pack(side="left", padx=4, pady=8)
-        ctk.CTkLabel(header, text="Valoare", width=130, anchor="w", text_color="#bbbbbb").pack(side="left", padx=4, pady=8)
-        ctk.CTkLabel(header, text="Status", width=130, anchor="w", text_color="#bbbbbb").pack(side="left", padx=4, pady=8)
-
-        for r in self.fetch_history(
+        istoric_rows = self.fetch_history(
             user_id=(selected_user or None),
             client_name=termen_raw,
             date_range=(data_start, data_end),
             id_egal=id_egal,
-        ):
-            id_o, nume, total_lei, data, detalii = r[0], r[1], r[2], r[3], r[4]
+        )
+
+        self._istoric_row_data = list(istoric_rows)
+        self._istoric_selected_idx = None
+
+        ph = getattr(self, "_istoric_empty_placeholder", None)
+        if ph is not None:
+            try:
+                ph.destroy()
+            except Exception:
+                pass
+            self._istoric_empty_placeholder = None
+
+        pool = getattr(self, "_istoric_row_pool", None)
+        if pool is None:
+            self._istoric_row_pool = []
+            pool = self._istoric_row_pool
+        for cell in pool:
+            try:
+                cell["frame"].pack_forget()
+            except Exception:
+                pass
+
+        _font_row = ("Segoe UI", 12)
+        _font_name = ("Segoe UI", 12, "bold")
+        _muted = "#9E9E9E"
+
+        if not istoric_rows:
+            self._istoric_empty_placeholder = ctk.CTkLabel(
+                list_scroll,
+                text="Nicio ofertă găsită pentru filtrele curente.",
+                font=_font_row,
+                text_color=_muted,
+            )
+            self._istoric_empty_placeholder.pack(anchor="w", padx=12, pady=16)
+            self._istoric_row_frames = []
+            try:
+                list_scroll._parent_canvas.yview_moveto(0)
+            except Exception:
+                pass
+            self._on_istoric_listbox_select()
+            return
+
+        while len(pool) < len(istoric_rows):
+            row_f = ctk.CTkFrame(list_scroll, height=44, fg_color="#2b2b2b", corner_radius=4)
+            row_f.pack_propagate(False)
+            lbl_nume = ctk.CTkLabel(row_f, text="", font=_font_name, anchor="w")
+            lbl_nume.place(relx=0.02, rely=0.5, anchor="w")
+            lbl_data = ctk.CTkLabel(row_f, text="", font=_font_row, text_color=_muted, anchor="w")
+            lbl_data.place(relx=0.28, rely=0.5, anchor="w")
+            lbl_cons = ctk.CTkLabel(row_f, text="", font=_font_row, text_color=_muted, anchor="w")
+            lbl_cons.place(relx=0.46, rely=0.5, anchor="w")
+            lbl_nr = ctk.CTkLabel(row_f, text="", font=_font_row, text_color=_muted, anchor="w")
+            lbl_nr.place(relx=0.62, rely=0.5, anchor="w")
+            lbl_tot = ctk.CTkLabel(row_f, text="", font=_font_row, anchor="w")
+            lbl_tot.place(relx=0.72, rely=0.5, anchor="w")
+            lbl_st = ctk.CTkLabel(row_f, text="", font=_font_row, text_color=_muted, anchor="e")
+            lbl_st.place(relx=0.98, rely=0.5, anchor="e")
+            pool.append(
+                {
+                    "frame": row_f,
+                    "lbl_nume": lbl_nume,
+                    "lbl_data": lbl_data,
+                    "lbl_cons": lbl_cons,
+                    "lbl_nr": lbl_nr,
+                    "lbl_tot": lbl_tot,
+                    "lbl_st": lbl_st,
+                }
+            )
+
+        self._istoric_row_frames = []
+        for i, r in enumerate(istoric_rows):
+            id_o, nume, total_lei, data, det_raw = r[0], r[1], r[2], r[3], r[4]
             avans = 1 if (len(r) > 5 and r[5]) else 0
             consultant = (r[6] if len(r) > 6 else "") or "-"
             nr_inreg = str(id_o).zfill(5)
-            f = ctk.CTkFrame(self.scroll_istoric, fg_color="#2D2D2D", border_width=1, border_color="#333333")
-            f.pack(fill="x", pady=5, padx=5)
-            status_text = "Încasat parțial" if avans else "În așteptare"
-            row_text = ctk.CTkFrame(f, fg_color="transparent")
-            row_text.pack(side="left", padx=8, pady=8, fill="x")
-            ctk.CTkLabel(row_text, text=f"{data}", width=190, anchor="w").pack(side="left", padx=(4, 2))
-            ctk.CTkLabel(row_text, text=f"{consultant}", width=170, anchor="w").pack(side="left", padx=2)
-            ctk.CTkLabel(row_text, text=f"{(nume or '').upper()} ({nr_inreg})", width=230, anchor="w").pack(side="left", padx=2)
-            ctk.CTkLabel(row_text, text=f"{float(total_lei or 0):.2f} LEI", width=130, anchor="w").pack(side="left", padx=2)
-            ctk.CTkLabel(row_text, text=status_text, width=130, anchor="w").pack(side="left", padx=2)
-            f_btns = ctk.CTkFrame(f, fg_color="transparent")
-            f_btns.pack(side="right", padx=15)
-            produse_raw = loads_offer_items(detalii)
-            payload = produse_raw if isinstance(produse_raw, dict) else {"items": produse_raw}
-            ctk.CTkButton(
-                f_btns,
-                text="DESCHIDE",
-                width=100,
-                command=lambda data={"id_oferta": id_o, "data_oferta": data, "nume": nume, "produse": payload}: self.porneste_ofertarea(data),
-            ).pack(side="left", padx=5)
-            ctk.CTkButton(
-                f_btns,
-                text="DESCARCĂ PDF",
-                width=130,
-                fg_color="#F57C00",
-                hover_color="#E65100",
-                command=lambda data={"id_oferta": id_o, "data_oferta": data, "nume": nume, "produse": payload}: self._download_pdf_from_istoric(data),
-            ).pack(side="left", padx=5)
-            btn_avans = ctk.CTkButton(
-                f_btns,
-                text="✓ Avans încasat" if avans else "Avans încasat",
-                width=120,
+            mod_m = get_offer_modificare_meta(det_raw or "")
+            if mod_m:
+                who = (mod_m[0] or "")[:14]
+                status_text = f"Modificat: {who}" + (" · Avans" if avans else "")
+            else:
+                status_text = "Parțial" if avans else "Aștept."
+            ds = str(data)[:20]
+            cc = str(consultant)[:18]
+            nm = str(nume or "").upper()
+            total_txt = f"{float(total_lei or 0):,.2f} LEI".replace(",", " ")
+
+            cell = pool[i]
+            row_f = cell["frame"]
+            cell["lbl_nume"].configure(text=nm[:32])
+            cell["lbl_data"].configure(text=ds)
+            cell["lbl_cons"].configure(text=cc)
+            cell["lbl_nr"].configure(text=f"#{nr_inreg}")
+            cell["lbl_tot"].configure(text=total_txt)
+            cell["lbl_st"].configure(text=status_text)
+            row_f.configure(fg_color="#2b2b2b")
+            row_f.pack(fill="x", pady=1)
+            self._istoric_row_frames.append(row_f)
+
+            def _bind_row_select(idx: int):
+                def _select(_event=None):
+                    self._istoric_set_selected_row(idx)
+
+                def _double(_event=None):
+                    self._istoric_set_selected_row(idx)
+                    self._istoric_action_deschide()
+
+                return _select, _double
+
+            _sel, _dbl = _bind_row_select(i)
+            for w in (
+                row_f,
+                cell["lbl_nume"],
+                cell["lbl_data"],
+                cell["lbl_cons"],
+                cell["lbl_nr"],
+                cell["lbl_tot"],
+                cell["lbl_st"],
+            ):
+                w.bind("<Button-1>", _sel)
+                w.bind("<Double-Button-1>", _dbl)
+
+        try:
+            list_scroll._parent_canvas.yview_moveto(0)
+        except Exception:
+            pass
+
+        self._on_istoric_listbox_select()
+
+    def _istoric_set_selected_row(self, idx: int | None) -> None:
+        self._istoric_selected_idx = idx
+        frames = getattr(self, "_istoric_row_frames", None) or []
+        for i, f in enumerate(frames):
+            try:
+                if f.winfo_exists():
+                    f.configure(fg_color="#1e4620" if (idx is not None and i == idx) else "#2b2b2b")
+            except Exception:
+                pass
+        self._on_istoric_listbox_select()
+
+    def _istoric_current_row(self):
+        idx = getattr(self, "_istoric_selected_idx", None)
+        if idx is None:
+            return None
+        rows = getattr(self, "_istoric_row_data", None) or []
+        if idx < 0 or idx >= len(rows):
+            return None
+        return rows[idx]
+
+    def _on_istoric_listbox_select(self, event=None):
+        r = self._istoric_current_row()
+        st = "normal" if r else "disabled"
+        for b in (self._istoric_btn_open, self._istoric_btn_modifica, self._istoric_btn_pdf, self._istoric_btn_avans):
+            if b is not None:
+                b.configure(state=st)
+        if getattr(self, "_istoric_btn_del", None) is not None:
+            self._istoric_btn_del.configure(state=st)
+        if r:
+            avans = 1 if (len(r) > 5 and r[5]) else 0
+            self._istoric_btn_avans.configure(
+                text="✓ Avans încasat" if avans else "Marchează avans încasat",
                 fg_color="#2E7D32" if avans else "#3A3A3A",
-                command=lambda id_oferta=id_o: self._toggle_avans_incasat(id_oferta),
             )
-            btn_avans.pack(side="left", padx=5)
-            can_delete_offers = self._privileges[2] if self._privileges else 1
-            if can_delete_offers:
-                ctk.CTkButton(
-                    f_btns,
-                    text="X",
-                    width=40,
-                    fg_color="#7a1a1a",
-                    command=lambda id_o=id_o: self.solicita_parola_stergere(id_o),
-                ).pack(side="left", padx=5)
+
+    def _istoric_action_deschide(self):
+        row = self._istoric_current_row()
+        if not row:
+            self.afiseaza_mesaj("Atenție", "Selectați o ofertă din listă.", "#F57C00")
+            return
+        id_o, nume, _t, data, detalii = row[0], row[1], row[2], row[3], row[4]
+        self.porneste_ofertarea(self._istoric_open_data_from_row(id_o, data, nume, detalii))
+
+    def _istoric_action_modifica(self):
+        row = self._istoric_current_row()
+        if not row:
+            self.afiseaza_mesaj("Atenție", "Selectați o ofertă din listă.", "#F57C00")
+            return
+        id_o, nume, _t, data, detalii = row[0], row[1], row[2], row[3], row[4]
+        snap = get_offer_snapshot(self.cursor, int(id_o))
+        if snap:
+            cid = int(snap.get("id_client") or 0)
+            if cid:
+                cr = get_client_by_id(self.cursor, cid)
+                if cr:
+                    self.entry_nume.delete(0, "end")
+                    self.entry_nume.insert(0, str(cr[0] or ""))
+                    self.entry_tel.delete(0, "end")
+                    self.entry_tel.insert(0, str(cr[1] or ""))
+                    self.entry_adresa.delete(0, "end")
+                    self.entry_adresa.insert(0, str(cr[2] or ""))
+                    if getattr(self, "entry_email", None):
+                        self.entry_email.delete(0, "end")
+                        self.entry_email.insert(0, str(cr[3] or "") if len(cr) > 3 else "")
+        self.porneste_ofertarea(self._istoric_open_data_from_row(id_o, data, nume, detalii), modifica=True)
+
+    def _istoric_action_pdf(self):
+        row = self._istoric_current_row()
+        if not row:
+            self.afiseaza_mesaj("Atenție", "Selectați o ofertă din listă.", "#F57C00")
+            return
+        id_o, nume, _t, data, detalii = row[0], row[1], row[2], row[3], row[4]
+        self._download_pdf_from_istoric(self._istoric_open_data_from_row(id_o, data, nume, detalii))
+
+    def _istoric_action_avans(self):
+        row = self._istoric_current_row()
+        if not row:
+            return
+        self._toggle_avans_incasat(int(row[0]))
+
+    def _istoric_action_sterge(self):
+        row = self._istoric_current_row()
+        if not row:
+            return
+        self.solicita_parola_stergere(int(row[0]))
+
+    def _istoric_open_data_from_row(self, id_o, data, nume, detalii):
+        """Construiește payload-ul pentru DESCHIDE/PDF; parsează detalii doar la click, nu la refresh."""
+        produse_raw = loads_offer_items(detalii)
+        payload = produse_raw if isinstance(produse_raw, dict) else {"items": produse_raw}
+        return {"id_oferta": id_o, "data_oferta": data, "nume": nume, "produse": payload}
 
     def fetch_history(
         self,
@@ -5571,7 +5841,11 @@ class AplicatieOfertare(ctk.CTk):
 
         nume, tel, adr = self.entry_nume.get(), self.entry_tel.get(), self.entry_adresa.get()
         email = (self.entry_email.get() or "").strip() if getattr(self, "entry_email", None) else ""
-        data_s = f"{self.combo_an.get()}-{self.combo_luna.get()} {datetime.now().strftime('%H:%M')}"
+        edit_id = getattr(self, "_edit_offer_id", None)
+        if edit_id and (self.data_oferta_curenta or "").strip():
+            data_s = (self.data_oferta_curenta or "").strip()
+        else:
+            data_s = f"{self.combo_an.get()}-{self.combo_luna.get()} {datetime.now().strftime('%H:%M')}"
 
         try:
             client_id = get_client_id_by_name(self.cursor, nume)
@@ -5603,12 +5877,15 @@ class AplicatieOfertare(ctk.CTk):
             )
             termen_livrare_zile = self._parse_termen_livrare_zile()
 
+            mod_la = datetime.now().strftime("%Y-%m-%d %H:%M")
             detalii = dumps_offer_items(
                 self.cos_cumparaturi,
                 mentiuni=mentiuni_text,
                 afiseaza_mentiuni_pdf=afiseaza_mentiuni_pdf,
                 conditii_pdf=conditii_pdf_activ,
                 termen_livrare_zile=termen_livrare_zile,
+                modificat_de=(self.utilizator_creat if edit_id else None),
+                modificat_la=(mod_la if edit_id else None),
             )
             try:
                 print(
@@ -5619,19 +5896,35 @@ class AplicatieOfertare(ctk.CTk):
                 print(f"[SYNC][UI] Rânduri produse/materiale (payload detalii_oferta): {detalii}")
             except Exception:
                 pass
-            self.id_oferta_curenta = insert_offer(
-                self.conn,
-                self.cursor,
-                id_client=client_id,
-                detalii_oferta=detalii,
-                total_lei=self.ultima_valoare_lei,
-                data_oferta=data_s,
-                nume_client_temp=nume,
-                utilizator_creat=self.utilizator_creat,
-                discount_proc=discount_salvat,
-                curs_euro=self.curs_euro,
-                safe_mode_enabled=1 if self._is_safe_mode_enabled() else 0,
-            )
+            if edit_id:
+                update_offer_full(
+                    self.conn,
+                    self.cursor,
+                    offer_id=int(edit_id),
+                    id_client=client_id,
+                    detalii_oferta=detalii,
+                    total_lei=self.ultima_valoare_lei,
+                    data_oferta=data_s,
+                    nume_client_temp=nume,
+                    discount_proc=discount_salvat,
+                    curs_euro=self.curs_euro,
+                    safe_mode_enabled=1 if self._is_safe_mode_enabled() else 0,
+                )
+                self.id_oferta_curenta = int(edit_id)
+            else:
+                self.id_oferta_curenta = insert_offer(
+                    self.conn,
+                    self.cursor,
+                    id_client=client_id,
+                    detalii_oferta=detalii,
+                    total_lei=self.ultima_valoare_lei,
+                    data_oferta=data_s,
+                    nume_client_temp=nume,
+                    utilizator_creat=self.utilizator_creat,
+                    discount_proc=discount_salvat,
+                    curs_euro=self.curs_euro,
+                    safe_mode_enabled=1 if self._is_safe_mode_enabled() else 0,
+                )
             self.data_oferta_curenta = data_s
             try:
                 print(
@@ -5640,20 +5933,6 @@ class AplicatieOfertare(ctk.CTk):
                 )
             except Exception:
                 pass
-            # #region agent log
-            _agent_debug_log(
-                run_id="pre-fix",
-                hypothesis_id="H6",
-                location="ui.py:salveaza_oferta_finala:insert_offer",
-                message="Oferta salvată în DB și contextul actualizat",
-                data={
-                    "saved_id_oferta": self.id_oferta_curenta,
-                    "saved_data_oferta": data_s,
-                    "nume_client_temp": nume,
-                    "utilizator_creat": self.utilizator_creat,
-                },
-            )
-            # #endregion
         except sqlite3.OperationalError as e:
             logger.exception("Eroare SQLite la salvarea ofertei")
             msg = (
@@ -5677,10 +5956,21 @@ class AplicatieOfertare(ctk.CTk):
 
         # 2) Apoi afișăm mesajul de succes cu numărul ofertei.
         nr = str(self.id_oferta_curenta).zfill(5)
-        self.afiseaza_mesaj(
-            "Succes",
-            f"Oferta salvată! Nr. înregistrare: {nr}. Poți descărca PDF-ul cu acest număr.",
-        )
+        if edit_id:
+            self.afiseaza_mesaj(
+                "Succes",
+                f"Ofertă actualizată (#{nr}). Modificată de {self.utilizator_creat}. Poți descărca PDF-ul.",
+            )
+        else:
+            self.afiseaza_mesaj(
+                "Succes",
+                f"Oferta salvată! Nr. înregistrare: {nr}. Poți descărca PDF-ul cu acest număr.",
+            )
+        if getattr(self, "win_istoric", None) and self.win_istoric.winfo_exists():
+            try:
+                self.refresh_lista_istoric()
+            except Exception:
+                pass
         # Marcăm oferta ca fiind salvată în această sesiune, pentru a nu mai cere confirmare la închidere
         self._oferta_salvata_recent = True
 
@@ -5794,18 +6084,18 @@ class AplicatieOfertare(ctk.CTk):
 
 
 def run_app():
-    def show_login():
-        login = LoginWindow(on_success=start_main)
+    while True:
+        login = LoginWindow()
         login.mainloop()
-
-    def start_main(utilizator: str):
-        app = AplicatieOfertare(utilizator_creat=utilizator, on_logout=show_login)
-        if os.name == "nt":
-            try:
-                app.state("zoomed")
-            except Exception:
-                logger.exception("Nu s-a putut seta fereastra principală în mod maximizat (zoomed).")
+        user = getattr(login, "_auth_user", None)
+        try:
+            login.destroy()
+        except Exception:
+            pass
+        if not user:
+            break
+        app = AplicatieOfertare(utilizator_creat=user, on_logout=None)
         app.mainloop()
-
-    show_login()
+        if not getattr(app, "_want_login_again", False):
+            break
 
