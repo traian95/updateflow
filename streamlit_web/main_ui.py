@@ -17,6 +17,7 @@ from ofertare.auth_utils import hash_parola as hash_parola_fn
 from ofertare.config import AppConfig, BNR_TIMEOUT_S, get_database_path
 from ofertare.db import (
     get_all_clienti_telefon,
+    get_approved_users_with_privileges,
     get_categorii_distinct,
     get_client_by_id,
     get_client_by_name,
@@ -255,6 +256,38 @@ SIDEBAR_NAV_CSS = """
 
 def _slug(titlu: str) -> str:
     return "".join(c if c.isalnum() else "_" for c in titlu)
+
+
+def _ui_display_name(cursor, username: str) -> str:
+    """Nume afișat în interfață (nu alterează PDF / câmpuri persistate)."""
+    u = (username or "").strip()
+    if not u:
+        return ""
+    fn = get_user_full_name(cursor, u)
+    return (fn or "").strip() or u
+
+
+def _istoric_utilizator_filter_entries(cursor) -> tuple[list[str], dict[str, str | None]]:
+    """Etichete pentru selectbox și mapare etichetă → username (None = toți)."""
+    labels: list[str] = ["(toți)"]
+    label_to_user: dict[str, str | None] = {"(toți)": None}
+    used_labels: set[str] = {"(toți)"}
+    try:
+        for row in get_approved_users_with_privileges(cursor):
+            nume_complet = (row[1] or "").strip() if len(row) > 1 else ""
+            uname = (row[2] or "").strip() if len(row) > 2 else ""
+            if not uname:
+                continue
+            disp = nume_complet or uname
+            label = disp
+            if label in used_labels:
+                label = f"{disp} ({uname})"
+            used_labels.add(label)
+            labels.append(label)
+            label_to_user[label] = uname
+    except Exception:
+        pass
+    return labels, label_to_user
 
 
 def _visible_categories(cursor) -> list[str]:
@@ -563,7 +596,7 @@ def render_sidebar_nav(db, priv: tuple[int, int, int, int, int]) -> None:
                 st.rerun()
 
         st.divider()
-        st.caption(f"👤 {st.session_state.logged_user}")
+        st.caption(f"👤 {_ui_display_name(db.cursor, st.session_state.logged_user)}")
         if st.button("Ieșire", use_container_width=True, key="sidebar_logout"):
             st.session_state.logged_user = ""
             st.session_state.page = "login"
@@ -606,22 +639,38 @@ def _hydrate_session_from_offer_detalii(
 
 def _render_istoric_panel(db) -> None:
     pk = st.session_state.page
-    st.markdown("## Istoric oferte")
+    bc1, bc2 = st.columns([1, 5])
+    with bc1:
+        if st.button(
+            "← Înapoi",
+            key=f"istoric_back_{pk}",
+            help="Revenire la ecranul principal; datele din sesiune (coș, client) se păstrează.",
+        ):
+            st.session_state["nav_radio"] = "Acasă"
+            st.session_state.sidebar_view = "main"
+            st.rerun()
+    with bc2:
+        st.markdown("## Istoric oferte")
     q = st.text_input("Caută după nume client", key=f"istoric_q_{pk}")
-    uf = st.selectbox("Utilizator", ["(toți)"] + [st.session_state.logged_user], key=f"istoric_u_{pk}")
+    _uf_labels, _uf_map = _istoric_utilizator_filter_entries(db.cursor)
+    uf_label = st.selectbox("Filtru utilizator (creator ofertă)", _uf_labels, key=f"istoric_u_{pk}")
+    uf = _uf_map.get(uf_label)
     rows = get_istoric_oferte(
         db.cursor,
         f"%{q}%",
-        utilizator_creat=st.session_state.logged_user,
-        utilizator_filter=None if uf == "(toți)" else uf.replace("(toți)", "").strip() or None,
+        utilizator_creat=None,
+        utilizator_filter=uf,
     )
+    st.caption(f"**Afișate:** {len(rows[:80])} oferte (din toată echipa; restrângeți cu filtrul de mai sus).")
     for rid, nume, total, data_o, detalii, avans, ucreate in rows[:80]:
         with st.container():
             mod_extra = ""
             mm = get_offer_modificare_meta(detalii or "")
             if mm:
-                mod_extra = f" — _Modificat de **{mm[0]}**_"
-            st.write(f"**#{rid}** {nume} — {data_o} — {total:.2f} LEI — {ucreate}{mod_extra}")
+                mod_who = _ui_display_name(db.cursor, mm[0] or "")
+                mod_extra = f" — _Modificat de **{mod_who}**_"
+            creator_disp = _ui_display_name(db.cursor, ucreate or "")
+            st.write(f"**#{rid}** {nume} — {data_o} — {total:.2f} LEI — {creator_disp}{mod_extra}")
             if st.button(f"Deschide #{rid}", key=f"opn_{pk}_{rid}"):
                 _hydrate_session_from_offer_detalii(detalii or "", nume or "", data_o or "", rid, readonly=True)
                 st.session_state.editing_offer_id = None
@@ -682,7 +731,18 @@ def _render_istoric_panel(db) -> None:
 
 def _render_cautare_panel(db) -> None:
     pk = st.session_state.page
-    st.markdown("## Căutare clienți")
+    bc1, bc2 = st.columns([1, 5])
+    with bc1:
+        if st.button(
+            "← Înapoi",
+            key=f"cautare_back_{pk}",
+            help="Revenire la ecranul principal; datele din sesiune se păstrează.",
+        ):
+            st.session_state["nav_radio"] = "Acasă"
+            st.session_state.sidebar_view = "main"
+            st.rerun()
+    with bc2:
+        st.markdown("## Căutare clienți")
     term = st.text_input("Nume", key=f"cl_q_{pk}")
     interval = st.selectbox(
         "Interval", ["Toate", "Ultima Săptămână", "Ultima Lună", "Ultimul An"], key=f"cl_int_{pk}"
@@ -692,7 +752,7 @@ def _render_cautare_panel(db) -> None:
         zile = {"Ultima Săptămână": 7, "Ultima Lună": 30, "Ultimul An": 365}
         data_min = (datetime.now() - timedelta(days=zile[interval])).strftime("%Y-%m-%d")
     cli = get_clienti_with_oferte_count(
-        db.cursor, f"%{term}%", data_min, utilizator_creat=st.session_state.logged_user or None
+        db.cursor, f"%{term}%", data_min, utilizator_creat=None
     )
     for client_id, nume, adresa, tel, nr_o in cli[:100]:
         st.write(f"**{nume}** — {tel} — oferte: {nr_o}")
@@ -1230,6 +1290,19 @@ def render_configurator() -> None:
             close_conn()
         return
 
+    tb1, tb2 = st.columns([1, 4])
+    with tb1:
+        if st.button(
+            "← Înapoi",
+            key="cfg_spa_back_top",
+            help="Revenire la ecranul principal. Coșul și datele ofertei rămân în sesiune.",
+        ):
+            st.session_state.parchet_calculator_open = False
+            st.session_state.page = "start"
+            st.rerun()
+    with tb2:
+        st.caption("Configurator — aceeași fereastră; folosiți sidebar-ul sau «Înapoi» pentru navigare.")
+
     data_comanda_pdf = (st.session_state.data_oferta_curenta or "").strip() or (
         f"{st.session_state.client['an']}-{st.session_state.client['luna']} {datetime.now().strftime('%H:%M')}"
     )
@@ -1533,9 +1606,8 @@ def render_configurator() -> None:
                                     )
                                     st.session_state.id_oferta_curenta = int(eid)
                                     st.session_state.data_oferta_curenta = data_s
-                                    st.success(
-                                        f"Ofertă actualizată (#{eid}). Modificată de {st.session_state.logged_user}."
-                                    )
+                                    mod_disp = _ui_display_name(cursor, st.session_state.logged_user)
+                                    st.success(f"Ofertă actualizată (#{eid}). Modificată de {mod_disp}.")
                                 else:
                                     oid = insert_offer(
                                         db.conn,

@@ -6,6 +6,8 @@ from __future__ import annotations
 import logging
 import math
 import os
+import subprocess
+import sys
 import threading
 import sqlite3
 import re
@@ -74,6 +76,47 @@ from .services import fetch_bnr_eur_rate
 from .updater import check_for_updates, get_local_version, install_zip_update
 
 logger = logging.getLogger(__name__)
+
+
+def _desktop_dir_candidates() -> list[str]:
+    """Foldere Desktop posibile (ex. Desktop sincronizat cu OneDrive pe Windows)."""
+    home = os.path.expanduser("~")
+    cands = (
+        os.path.join(home, "Desktop"),
+        os.path.join(home, "OneDrive", "Desktop"),
+    )
+    return [c for c in cands if c and os.path.isdir(c)]
+
+
+def _is_path_on_user_desktop(file_path: str) -> bool:
+    """True dacă fișierul este salvat într-un subfolder al Desktop-ului utilizatorului."""
+    file_dir = os.path.normcase(os.path.abspath(os.path.dirname(file_path)))
+    for desktop in _desktop_dir_candidates():
+        d = os.path.normcase(os.path.abspath(desktop))
+        try:
+            common = os.path.commonpath([file_dir, d])
+        except ValueError:
+            continue
+        if common == d:
+            return True
+    return False
+
+
+def _open_path_in_default_app(path: str) -> None:
+    """Deschide fișierul cu aplicația implicită a sistemului (echivalent shell.openPath / open / xdg-open)."""
+    path = os.path.normpath(path)
+    if not os.path.isfile(path):
+        return
+    try:
+        if sys.platform == "win32":
+            os.startfile(path)  # noqa: S606
+        elif sys.platform == "darwin":
+            subprocess.run(["open", path], check=False, timeout=120)
+        else:
+            subprocess.run(["xdg-open", path], check=False, timeout=120)
+    except Exception:
+        logger.exception("Deschidere fișier PDF eșuată: %s", path)
+
 
 # Mânere Enger: prețul mânerului în DB este pe linia cu Tip Element «Măner» (CSV).
 MANER_ENGER_DECOR_MANER = "Măner"
@@ -1418,6 +1461,44 @@ class AplicatieOfertare(ctk.CTk):
         ctk.CTkLabel(msg_win, text=mesaj, font=("Segoe UI", 14, "bold"), wraplength=350).pack(expand=True, pady=20)
         ctk.CTkButton(msg_win, text="OK", fg_color=culoare, width=120, command=msg_win.destroy).pack(pady=20)
 
+    def _afiseaza_confirmare_pdf_desktop(self, cale_pdf: str) -> None:
+        """
+        Dialog după salvare reușită pe Desktop: mesaj fix + Deschide (aplicație implicită) / Anulare (închide).
+        """
+        parent = self.win_oferta if getattr(self, "win_oferta", None) else self
+        dlg = ctk.CTkToplevel(parent)
+        dlg.title("Succes")
+        dlg.geometry("440x210")
+        dlg.grab_set()
+        try:
+            dlg.attributes("-topmost", True)
+        except Exception:
+            pass
+        try:
+            dlg.transient(parent)
+        except Exception:
+            pass
+        ctk.CTkLabel(
+            dlg,
+            text="Oferta a fost salvată cu succes pe Desktop!",
+            font=("Segoe UI", 14, "bold"),
+            wraplength=400,
+        ).pack(expand=True, pady=(28, 18))
+        fr = ctk.CTkFrame(dlg, fg_color="transparent")
+        fr.pack(pady=(0, 22))
+
+        def _deschide() -> None:
+            _open_path_in_default_app(cale_pdf)
+            dlg.destroy()
+
+        def _anulare() -> None:
+            dlg.destroy()
+
+        ctk.CTkButton(fr, text="Deschide", fg_color=GREEN_SOFT, hover_color=GREEN_SOFT_DARK, width=130, command=_deschide).pack(
+            side="left", padx=10
+        )
+        ctk.CTkButton(fr, text="Anulare", fg_color=CORP_MATT_GREY, width=130, command=_anulare).pack(side="left", padx=10)
+
     def _is_safe_mode_enabled(self) -> bool:
         return bool(getattr(self, "safe_mode_enabled", True))
 
@@ -1453,6 +1534,17 @@ class AplicatieOfertare(ctk.CTk):
                 return full_name
         return self._NUME_UTILIZATOR_PDF.get("_fallback", "Traian Ciubuc")
 
+    def _nume_utilizator_pentru_afisare_ui(self) -> str:
+        """Nume complet în interfață (header, mesaje); PDF rămâne pe `_nume_utilizator_pentru_pdf`."""
+        u = (self.utilizator_creat or "").strip()
+        if not u:
+            return ""
+        try:
+            fn = get_user_full_name(self.cursor, u)
+        except Exception:
+            fn = None
+        return ((fn or "").strip() or u)
+
     def _parse_termen_livrare_zile(self) -> str:
         """Citește termenul de livrare din UI; acceptă valori de tip 20 sau 20-30."""
         valoare_raw = ""
@@ -1474,78 +1566,84 @@ class AplicatieOfertare(ctk.CTk):
         if not self.cos_cumparaturi:
             self.afiseaza_mesaj("Eroare", "Cosul este gol!", "#7a1a1a")
             return
-        # Dialog pentru costuri suplimentare – valorile se citesc aici ca să apară corect în PDF
         masuratori_val = float(getattr(self, "masuratori_lei", 0.0) or 0)
         transport_val = float(getattr(self, "transport_lei", 0.0) or 0)
-        win_sup = ctk.CTkToplevel(self.win_oferta if getattr(self, "win_oferta", None) else self)
-        win_sup.title("Costuri suplimentare")
-        win_sup.geometry("380x200")
-        win_sup.grab_set()
-        try:
-            win_sup.attributes("-topmost", True)
-        except Exception:
-            pass
-        f_sup = ctk.CTkFrame(win_sup, fg_color="transparent")
-        f_sup.pack(expand=True, fill="both", padx=20, pady=15)
-        ctk.CTkLabel(f_sup, text="Costuri suplimentare (LEI, TVA inclus) – apar în PDF:", font=("Segoe UI", 12)).pack(anchor="w", pady=(0, 8))
-        row1 = ctk.CTkFrame(f_sup, fg_color="transparent")
-        row1.pack(fill="x", pady=4)
-        ctk.CTkLabel(row1, text="Măsurători:", width=90, anchor="w").pack(side="left", padx=(0, 8))
-        ent_mas_pdf = ctk.CTkEntry(row1, width=120)
-        ent_mas_pdf.pack(side="left")
-        ent_mas_pdf.insert(0, f"{masuratori_val:.2f}")
-        row2 = ctk.CTkFrame(f_sup, fg_color="transparent")
-        row2.pack(fill="x", pady=4)
-        ctk.CTkLabel(row2, text="Transport:", width=90, anchor="w").pack(side="left", padx=(0, 8))
-        ent_tr_pdf = ctk.CTkEntry(row2, width=120)
-        ent_tr_pdf.pack(side="left")
-        ent_tr_pdf.insert(0, f"{transport_val:.2f}")
-
-        def _parse_sup(s: str) -> float:
-            s = (s or "").strip().replace(",", ".")
+        # În modul doar-citire (ofertă deschisă din istoric / regenerare PDF), folosim valorile deja în ofertă — fără dialog.
+        if not getattr(self, "_win_oferta_readonly", False):
+            # Dialog pentru costuri suplimentare – valorile se citesc aici ca să apară corect în PDF
+            win_sup = ctk.CTkToplevel(self.win_oferta if getattr(self, "win_oferta", None) else self)
+            win_sup.title("Costuri suplimentare")
+            win_sup.geometry("380x200")
+            win_sup.grab_set()
             try:
-                return float(s)
-            except ValueError:
-                return 0.0
+                win_sup.attributes("-topmost", True)
+            except Exception:
+                pass
+            f_sup = ctk.CTkFrame(win_sup, fg_color="transparent")
+            f_sup.pack(expand=True, fill="both", padx=20, pady=15)
+            ctk.CTkLabel(f_sup, text="Costuri suplimentare (LEI, TVA inclus) – apar în PDF:", font=("Segoe UI", 12)).pack(anchor="w", pady=(0, 8))
+            row1 = ctk.CTkFrame(f_sup, fg_color="transparent")
+            row1.pack(fill="x", pady=4)
+            ctk.CTkLabel(row1, text="Măsurători:", width=90, anchor="w").pack(side="left", padx=(0, 8))
+            ent_mas_pdf = ctk.CTkEntry(row1, width=120)
+            ent_mas_pdf.pack(side="left")
+            ent_mas_pdf.insert(0, f"{masuratori_val:.2f}")
+            row2 = ctk.CTkFrame(f_sup, fg_color="transparent")
+            row2.pack(fill="x", pady=4)
+            ctk.CTkLabel(row2, text="Transport:", width=90, anchor="w").pack(side="left", padx=(0, 8))
+            ent_tr_pdf = ctk.CTkEntry(row2, width=120)
+            ent_tr_pdf.pack(side="left")
+            ent_tr_pdf.insert(0, f"{transport_val:.2f}")
 
-        # Default 0,0 = sari peste; la "Continuă la PDF" se suprascriu cu valorile din câmpuri
-        valori_ok = [0.0, 0.0]
+            def _parse_sup(s: str) -> float:
+                s = (s or "").strip().replace(",", ".")
+                try:
+                    return float(s)
+                except ValueError:
+                    return 0.0
 
-        def _continua():
-            valori_ok[0] = _parse_sup(ent_mas_pdf.get())
-            valori_ok[1] = _parse_sup(ent_tr_pdf.get())
-            self.masuratori_lei = valori_ok[0]
-            self.transport_lei = valori_ok[1]
-            win_sup.destroy()
+            # Default 0,0 = sari peste; la "Continuă la PDF" se suprascriu cu valorile din câmpuri
+            valori_ok = [0.0, 0.0]
 
-        def _sari_peste():
-            valori_ok[0] = 0.0
-            valori_ok[1] = 0.0
-            self.masuratori_lei = 0.0
-            self.transport_lei = 0.0
-            win_sup.destroy()
+            def _continua():
+                valori_ok[0] = _parse_sup(ent_mas_pdf.get())
+                valori_ok[1] = _parse_sup(ent_tr_pdf.get())
+                self.masuratori_lei = valori_ok[0]
+                self.transport_lei = valori_ok[1]
+                win_sup.destroy()
 
-        btns_sup = ctk.CTkFrame(f_sup, fg_color="transparent")
-        btns_sup.pack(pady=(16, 0))
-        ctk.CTkButton(btns_sup, text="Continuă la PDF", fg_color="#F57C00", width=160, command=_continua).pack(side="left", padx=(0, 10))
-        ctk.CTkButton(btns_sup, text="Sari peste (0 la amândoua)", fg_color="#3A3A3A", width=180, command=_sari_peste).pack(side="left")
-        try:
-            win_sup.protocol("WM_DELETE_WINDOW", _sari_peste)
-        except Exception:
-            pass
-        try:
-            self.wait_window(win_sup)
-        except Exception:
-            pass
-        masuratori_val = valori_ok[0]
-        transport_val = valori_ok[1]
+            def _sari_peste():
+                valori_ok[0] = 0.0
+                valori_ok[1] = 0.0
+                self.masuratori_lei = 0.0
+                self.transport_lei = 0.0
+                win_sup.destroy()
 
-        cale_salvare = filedialog.asksaveasfilename(
-            parent=self.win_oferta,
-            defaultextension=".pdf",
-            initialfile=f"Oferta_{nume_client.replace(' ', '_')}.pdf",
-            filetypes=[("PDF", "*.pdf")],
-        )
+            btns_sup = ctk.CTkFrame(f_sup, fg_color="transparent")
+            btns_sup.pack(pady=(16, 0))
+            ctk.CTkButton(btns_sup, text="Continuă la PDF", fg_color="#F57C00", width=160, command=_continua).pack(side="left", padx=(0, 10))
+            ctk.CTkButton(btns_sup, text="Sari peste (0 la amândoua)", fg_color="#3A3A3A", width=180, command=_sari_peste).pack(side="left")
+            try:
+                win_sup.protocol("WM_DELETE_WINDOW", _sari_peste)
+            except Exception:
+                pass
+            try:
+                self.wait_window(win_sup)
+            except Exception:
+                pass
+            masuratori_val = valori_ok[0]
+            transport_val = valori_ok[1]
+
+        _fd_kw: dict = {
+            "parent": self.win_oferta,
+            "defaultextension": ".pdf",
+            "initialfile": f"Oferta_{nume_client.replace(' ', '_')}.pdf",
+            "filetypes": [("PDF", "*.pdf")],
+        }
+        desks = _desktop_dir_candidates()
+        if desks:
+            _fd_kw["initialdir"] = desks[0]
+        cale_salvare = filedialog.asksaveasfilename(**_fd_kw)
         if not cale_salvare:
             return
         id_oferta = getattr(self, "id_oferta_curenta", None)
@@ -1620,7 +1718,16 @@ class AplicatieOfertare(ctk.CTk):
                 aplica_adaugiri_denumire=conditii_pdf_activ,
                 data_comanda=data_oferta_pdf,
             )
-            self.afiseaza_mesaj("Succes", "PDF generat cu succes!", "#2E7D32")
+            # După return din fpdf2.output — scriere sincronă; verificăm că fișierul există și nu e gol.
+            cale_abs = os.path.abspath(cale_salvare)
+            if not os.path.isfile(cale_abs):
+                raise RuntimeError("Fișierul PDF nu a fost găsit pe disc după salvare.")
+            if os.path.getsize(cale_abs) == 0:
+                raise RuntimeError("Fișierul PDF generat este gol.")
+            if _is_path_on_user_desktop(cale_abs):
+                self._afiseaza_confirmare_pdf_desktop(cale_abs)
+            else:
+                self.afiseaza_mesaj("Succes", "PDF generat cu succes!", "#2E7D32")
         except Exception as e:
             logger.exception("Generare PDF eșuată")
             self.afiseaza_mesaj("Eroare", f"Nu s-a putut salva PDF-ul: {e}", "#7a1a1a")
@@ -1717,7 +1824,7 @@ class AplicatieOfertare(ctk.CTk):
             ).pack(side="left", padx=(10, 4), pady=8)
         ctk.CTkLabel(
             user_profile_frame,
-            text=f"{self.utilizator_creat or 'traianc'}",
+            text=f"{self._nume_utilizator_pentru_afisare_ui() or self.utilizator_creat or '—'}",
             font=("Segoe UI", 11),
             text_color="#ffffff",
         ).pack(side="left", padx=(4, 10), pady=8)
@@ -1885,26 +1992,43 @@ class AplicatieOfertare(ctk.CTk):
 
         self._build_main_transition_overlay_preset(main_content)
 
-        f_curs_container = ctk.CTkFrame(self, fg_color="transparent")
+        _curs_panel_min_w = 300
+        f_curs_container = ctk.CTkFrame(
+            self,
+            fg_color="#1e1e1e",
+            corner_radius=8,
+            border_width=1,
+            border_color="#3a3a3a",
+        )
         f_curs_container.place(relx=0.98, rely=0.98, anchor="se")
+        f_curs_container.grid_columnconfigure(0, weight=1, minsize=_curs_panel_min_w)
+
         f_curs = ctk.CTkFrame(f_curs_container, fg_color="#2E7D32", corner_radius=4)
-        f_curs.pack(pady=5, fill="x")
+        f_curs.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 6))
+        f_curs.grid_columnconfigure(0, weight=1)
+
         self.lbl_curs_afisat = ctk.CTkLabel(
             f_curs,
             text=f"CURS EURO (BNR+1%): {self.curs_euro} LEI",
             font=("Segoe UI", 12),
             text_color="white",
             cursor="hand2",
+            anchor="center",
+            justify="center",
+            wraplength=_curs_panel_min_w - 36,
         )
-        self.lbl_curs_afisat.pack(padx=15, pady=5)
+        self.lbl_curs_afisat.grid(row=0, column=0, sticky="ew", padx=12, pady=8)
         can_modify_curs = self._privileges[0] if self._privileges else 1
         if can_modify_curs:
             self.lbl_curs_afisat.bind("<Button-1>", self.reseteaza_la_bnr)
         self.entry_curs_manual = ctk.CTkEntry(
-            f_curs_container, placeholder_text="Ajustează curs manual...", width=180, font=("Segoe UI", 11)
+            f_curs_container,
+            placeholder_text="Ajustează curs manual...",
+            font=("Segoe UI", 11),
+            height=32,
         )
         if can_modify_curs:
-            self.entry_curs_manual.pack(pady=5)
+            self.entry_curs_manual.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
             self.entry_curs_manual.bind("<Return>", lambda e: self.actualizeaza_curs_manual(self.entry_curs_manual.get()))
         ctk.CTkButton(
             self,
@@ -2148,6 +2272,22 @@ class AplicatieOfertare(ctk.CTk):
         self._build_lista_pret_produse_from_rows(rows, termen)
 
     # --- FUNCTII NOI PENTRU CAUTARE CLIENT ---
+    def _inchide_fereastra_secundara(self, attr_name: str) -> None:
+        """Închide Istoric / Căutare (Toplevel); datele din ecranul principal rămân neschimbate."""
+        w = getattr(self, attr_name, None)
+        if w is None:
+            return
+        try:
+            w.grab_release()
+        except Exception:
+            pass
+        try:
+            if w.winfo_exists():
+                w.destroy()
+        except Exception:
+            pass
+        setattr(self, attr_name, None)
+
     def deschide_cautare_client(self, nume_precompletat=None):
         self._iron_curtain_show()
         self._main_transition_active = True
@@ -2157,6 +2297,19 @@ class AplicatieOfertare(ctk.CTk):
         self.win_cautare.configure(fg_color=CORP_WINDOW_BG)
         _apply_tk_window_chrome_dark(self.win_cautare)
         _apply_fullscreen_workspace(self.win_cautare)
+
+        nav_c = ctk.CTkFrame(self.win_cautare, fg_color=CORP_WINDOW_BG)
+        nav_c.pack(fill="x", padx=20, pady=(10, 4))
+        ctk.CTkButton(
+            nav_c,
+            text="← Înapoi la ecran principal",
+            width=260,
+            height=32,
+            fg_color="#3A3A3A",
+            hover_color="#454545",
+            font=("Segoe UI", 12),
+            command=lambda: self._inchide_fereastra_secundara("win_cautare"),
+        ).pack(side="left")
 
         f_filtre = ctk.CTkFrame(self.win_cautare)
         f_filtre.pack(fill="x", padx=20, pady=(14, 10))
@@ -2346,15 +2499,15 @@ class AplicatieOfertare(ctk.CTk):
         req_id: int,
         search_term: str,
         data_min: str | None,
-        utilizator: str | None,
     ) -> None:
         rows_out: list[dict[str, Any]] = []
         err_msg: str | None = None
         try:
             db = open_db(get_database_path())
             try:
+                # Nr. oferte = total echipă (fără filtru pe utilizatorul curent).
                 raw = get_clienti_with_oferte_count(
-                    db.cursor, search_term, data_min, utilizator_creat=utilizator
+                    db.cursor, search_term, data_min, utilizator_creat=None
                 )
                 for t in raw:
                     rows_out.append(
@@ -2518,12 +2671,10 @@ class AplicatieOfertare(ctk.CTk):
         if interval != "Toate":
             zile = {"Ultima Săptămână": 7, "Ultima Lună": 30, "Ultimul An": 365}
             data_min = (datetime.now() - timedelta(days=zile[interval])).strftime("%Y-%m-%d")
-        utilizator = self.utilizator_creat or None
-
         self._cautare_show_loading_skeleton(st)
         threading.Thread(
             target=self._cautare_fetch_worker,
-            args=(req_id, search_term, data_min, utilizator),
+            args=(req_id, search_term, data_min),
             daemon=True,
         ).start()
 
@@ -2535,7 +2686,7 @@ class AplicatieOfertare(ctk.CTk):
             return
         nume, telefon, adresa, email = row[0], row[1] or "", row[2] or "", (row[3] or "").strip()
 
-        oferte = get_offers_by_client(self.cursor, client_id, utilizator_creat=self.utilizator_creat or None)
+        oferte = get_offers_by_client(self.cursor, client_id, utilizator_creat=None)
 
         win = ctk.CTkToplevel(self)
         win.title(f"Client: {nume}")
@@ -2569,10 +2720,13 @@ class AplicatieOfertare(ctk.CTk):
                 font=("Segoe UI", 12),
             ).pack(side="left", padx=15, pady=10)
             produse_raw = loads_offer_items(detalii) if detalii else []
-            produse = produse_raw.get("items", []) if isinstance(produse_raw, dict) else produse_raw
+            produse_payload = produse_raw if isinstance(produse_raw, dict) else {"items": produse_raw}
             ctk.CTkButton(
                 f_o, text="Deschide oferta", width=120, height=28, fg_color="#2E7D32",
-                command=lambda p=produse, n=nume, oid=id_o, d=data_oferta, w=win: (self.porneste_ofertarea({"id_oferta": oid, "data_oferta": d, "nume": n, "produse": p}), w.destroy()),
+                command=lambda p=produse_payload, n=nume, oid=id_o, d=data_oferta, w=win: (
+                    self.porneste_ofertarea({"id_oferta": oid, "data_oferta": d, "nume": n, "produse": p}),
+                    w.destroy(),
+                ),
             ).pack(side="right", padx=10, pady=8)
 
     # --- FINAL FUNCTII NOI ---
@@ -2712,6 +2866,10 @@ class AplicatieOfertare(ctk.CTk):
             self.data_oferta_curenta = (date_istoric.get("data_oferta") or "").strip()
             nume = date_istoric.get("nume", "")
             produse_payload = date_istoric.get("produse", [])
+            self.masuratori_lei = 0.0
+            self.transport_lei = 0.0
+            # costs_entered în detalii: lipsă = oferte vechi (considerăm pasul costuri deja parcurs); False = încă nu s-a închis dialogul.
+            self._offer_costs_entered = True
             # Suport atât pentru format vechi (listă simplă), cât și nou (dict cu items + mentiuni).
             if isinstance(produse_payload, dict):
                 self.cos_cumparaturi = produse_payload.get("items", [])
@@ -2719,15 +2877,29 @@ class AplicatieOfertare(ctk.CTk):
                 afiseaza_mentiuni_initial = bool(produse_payload.get("afiseaza_mentiuni_pdf", False))
                 conditii_pdf_initial = bool(produse_payload.get("conditii_pdf", False))
                 termen_livrare_initial = str(produse_payload.get("termen_livrare_zile", "0") or "0").strip()
+                try:
+                    self.masuratori_lei = float(produse_payload.get("masuratori_lei") or 0)
+                except (TypeError, ValueError):
+                    self.masuratori_lei = 0.0
+                try:
+                    self.transport_lei = float(produse_payload.get("transport_lei") or 0)
+                except (TypeError, ValueError):
+                    self.transport_lei = 0.0
+                if "costs_entered" in produse_payload:
+                    self._offer_costs_entered = bool(produse_payload.get("costs_entered"))
             else:
                 self.cos_cumparaturi = produse_payload
             if modifica and oid_hist:
                 self._edit_offer_id = int(oid_hist)
             readonly = not modifica
+            # Modificare / „Rescrie”: nu mai afișăm dialogul de costuri (valorile sunt deja în ofertă sau nu se re-cere pasul).
+            if modifica and oid_hist:
+                self._offer_costs_entered = True
         elif dev_mode:
             nume = "Dev Mode"
             self.cos_cumparaturi = []
             readonly = False
+            self._offer_costs_entered = False
         else:
             nume = self.entry_nume.get().strip()
             tel = self.entry_tel.get().strip()
@@ -2739,6 +2911,7 @@ class AplicatieOfertare(ctk.CTk):
                 return
             self.cos_cumparaturi = []
             readonly = False
+            self._offer_costs_entered = False
 
         self.win_oferta = ctk.CTkToplevel(self)
         self.win_oferta.title(f"Configurator - {nume}")
@@ -3078,7 +3251,7 @@ class AplicatieOfertare(ctk.CTk):
                 text_color="white",
                 font=("Segoe UI", 13, "bold"),
                 height=40,
-                command=self.salveaza_oferta_finala,
+                command=lambda: self.salveaza_oferta_finala(show_costs_dialog=True),
             )
             btn_save.pack(fill="x", pady=(0, 8))
             btn_goleste = ctk.CTkButton(
@@ -4990,6 +5163,8 @@ class AplicatieOfertare(ctk.CTk):
             return "GREKO"
         if "LACUIT" in v:
             return "LACUIT"
+        if "0.2" in v or "0,2" in v:
+            return "CPL 0.2"
         if "PREMIUM" in v:
             return "CPL/ST PREMIUM"
         if "CPL" in v:
@@ -5957,6 +6132,20 @@ class AplicatieOfertare(ctk.CTk):
         self.win_istoric.configure(fg_color=CORP_WINDOW_BG)
         _apply_tk_window_chrome_dark(self.win_istoric)
         _apply_fullscreen_workspace(self.win_istoric)
+
+        nav_i = ctk.CTkFrame(self.win_istoric, fg_color=CORP_WINDOW_BG)
+        nav_i.pack(fill="x", padx=20, pady=(10, 4))
+        ctk.CTkButton(
+            nav_i,
+            text="← Înapoi la ecran principal",
+            width=260,
+            height=32,
+            fg_color="#3A3A3A",
+            hover_color="#454545",
+            font=("Segoe UI", 12),
+            command=lambda: self._inchide_fereastra_secundara("win_istoric"),
+        ).pack(side="left")
+
         search_f = ctk.CTkFrame(self.win_istoric, fg_color="#2b2b2b")
         search_f.pack(fill="x", padx=20, pady=5)
         self.ent_cauta_istoric = ctk.CTkEntry(
@@ -6086,13 +6275,17 @@ class AplicatieOfertare(ctk.CTk):
 
     def _get_istoric_user_map(self):
         out = {"Toți": ""}
+        used = {"Toți"}
         try:
             for row in get_approved_users_with_privileges(self.cursor):
                 nume_complet = (row[1] or "").strip() if len(row) > 1 else ""
                 username = (row[2] or "").strip() if len(row) > 2 else ""
                 if not username:
                     continue
-                label = f"{nume_complet} ({username})" if nume_complet else username
+                label = nume_complet or username
+                if label in used:
+                    label = f"{nume_complet or username} ({username})"
+                used.add(label)
                 out[label] = username
         except Exception:
             logger.exception("Nu am putut încărca lista de useri pentru filtre istoric")
@@ -6375,11 +6568,25 @@ class AplicatieOfertare(ctk.CTk):
         for i, r in enumerate(istoric_rows):
             id_o, nume, total_lei, data, det_raw = r[0], r[1], r[2], r[3], r[4]
             avans = 1 if (len(r) > 5 and r[5]) else 0
-            consultant = (r[6] if len(r) > 6 else "") or "-"
+            consultant_raw = (r[6] if len(r) > 6 else "") or ""
+            try:
+                c_disp = (
+                    get_user_full_name(self.cursor, consultant_raw.strip())
+                    if consultant_raw.strip()
+                    else None
+                )
+            except Exception:
+                c_disp = None
+            consultant = (c_disp or consultant_raw or "-")[:18]
             nr_inreg = str(id_o).zfill(5)
             mod_m = get_offer_modificare_meta(det_raw or "")
             if mod_m:
-                who = (mod_m[0] or "")[:14]
+                mu = (mod_m[0] or "").strip()
+                try:
+                    m_disp = get_user_full_name(self.cursor, mu) if mu else None
+                except Exception:
+                    m_disp = None
+                who = (m_disp or mu)[:20]
                 status_text = f"Modificat: {who}" + (" · Avans" if avans else "")
             else:
                 status_text = "Parțial" if avans else "Aștept."
@@ -6704,13 +6911,15 @@ class AplicatieOfertare(ctk.CTk):
         master.wait_window(dlg)
         return result[0]
 
-    def salveaza_oferta_finala(self, *, replace_offer_id: int | None = None, force_new_offer: bool = False):
+    def salveaza_oferta_finala(self, *, replace_offer_id: int | None = None, force_new_offer: bool = False, show_costs_dialog: bool = False):
         ok, mesaj = self._validare_oferta_usi_tocuri()
         if not ok:
             self.afiseaza_mesaj("Oferta nu poate fi salvată", mesaj, "#7a1a1a")
             return
 
         edit_id = getattr(self, "_edit_offer_id", None)
+        if force_new_offer:
+            self._offer_costs_entered = False
         if (
             not edit_id
             and not force_new_offer
@@ -6721,9 +6930,12 @@ class AplicatieOfertare(ctk.CTk):
             if choice is None:
                 return
             if choice == "replace":
-                self.salveaza_oferta_finala(replace_offer_id=int(self._last_saved_offer_id))
+                self.salveaza_oferta_finala(
+                    replace_offer_id=int(self._last_saved_offer_id),
+                    show_costs_dialog=show_costs_dialog,
+                )
                 return
-            self.salveaza_oferta_finala(force_new_offer=True)
+            self.salveaza_oferta_finala(force_new_offer=True, show_costs_dialog=show_costs_dialog)
             return
 
         nume, tel, adr = self.entry_nume.get(), self.entry_tel.get(), self.entry_adresa.get()
@@ -6793,10 +7005,13 @@ class AplicatieOfertare(ctk.CTk):
                 self.cos_cumparaturi,
                 mentiuni=mentiuni_text,
                 afiseaza_mentiuni_pdf=afiseaza_mentiuni_pdf,
+                masuratori_lei=float(getattr(self, "masuratori_lei", 0) or 0),
+                transport_lei=float(getattr(self, "transport_lei", 0) or 0),
                 conditii_pdf=conditii_pdf_activ,
                 termen_livrare_zile=termen_livrare_zile,
                 modificat_de=(self.utilizator_creat if touch_existing else None),
                 modificat_la=(mod_la if touch_existing else None),
+                costs_entered=bool(getattr(self, "_offer_costs_entered", False)),
             )
             try:
                 print(
@@ -6880,17 +7095,23 @@ class AplicatieOfertare(ctk.CTk):
         if self.id_oferta_curenta is not None:
             self._last_saved_offer_id = int(self.id_oferta_curenta)
 
-        # 1) După salvare, mai întâi întrebăm pentru Măsurători / Transport (în LEI, TVA inclus).
-        self._dialog_masuratori_transport()
+        # Dialog costuri: doar la apăsarea explicită „Salvează Ofertă”, prima dată când pasul nu e încă închis (nu la închiderea ferestrei / nu la editare din istoric).
+        if (
+            show_costs_dialog
+            and not edit_id
+            and not getattr(self, "_offer_costs_entered", True)
+        ):
+            self._dialog_masuratori_transport()
 
-        # 2) Apoi afișăm mesajul de succes cu numărul ofertei.
+        # Mesaj de succes cu numărul ofertei.
         nr = str(self.id_oferta_curenta).zfill(5)
         if replace_save:
             self.afiseaza_mesaj("Succes", f"Oferta #{nr} a fost actualizată cu succes.")
         elif edit_id:
+            mod_ui = self._nume_utilizator_pentru_afisare_ui() or self.utilizator_creat
             self.afiseaza_mesaj(
                 "Succes",
-                f"Ofertă actualizată (#{nr}). Modificată de {self.utilizator_creat}. Poți descărca PDF-ul.",
+                f"Ofertă actualizată (#{nr}). Modificată de {mod_ui}. Poți descărca PDF-ul.",
             )
         else:
             self.afiseaza_mesaj(
@@ -6953,18 +7174,23 @@ class AplicatieOfertare(ctk.CTk):
         if getattr(self, "transport_lei", 0):
             ent_tr.insert(0, f"{self.transport_lei:.2f}")
 
-        def _on_confirma():
-            def _parse_val(s: str) -> float:
-                s = (s or "").strip().replace(",", ".")
-                try:
-                    return float(s)
-                except ValueError:
-                    return 0.0
+        def _parse_val_local(s: str) -> float:
+            s = (s or "").strip().replace(",", ".")
+            try:
+                return float(s)
+            except ValueError:
+                return 0.0
 
-            self.masuratori_lei = _parse_val(ent_mas.get())
-            self.transport_lei = _parse_val(ent_tr.get())
-            win.destroy()
-            # Actualizăm oferta salvată cu măsurători/transport ca să apară și în PDF din admin.
+        def _finalize_costs_dialog(*, apply_entries: bool) -> None:
+            """Închide pasul costuri: marchează oferta ca având costurile definite (sau omise), persistă în detalii."""
+            if apply_entries:
+                self.masuratori_lei = _parse_val_local(ent_mas.get())
+                self.transport_lei = _parse_val_local(ent_tr.get())
+            self._offer_costs_entered = True
+            try:
+                win.destroy()
+            except Exception:
+                pass
             offer_id = getattr(self, "id_oferta_curenta", None)
             if offer_id and self.cos_cumparaturi:
                 mentiuni_text = ""
@@ -6972,39 +7198,46 @@ class AplicatieOfertare(ctk.CTk):
                     mentiuni_text = (self.txt_mentiuni.get("1.0", "end").strip() or "")
                     if getattr(self, "_mentiuni_placeholder_active", False):
                         mentiuni_text = ""
-                afiseaza_mentiuni_pdf = bool(getattr(self, "var_afiseaza_mentiuni_pdf", None) and self.var_afiseaza_mentiuni_pdf.get())
+                afiseaza_mentiuni_pdf = bool(
+                    getattr(self, "var_afiseaza_mentiuni_pdf", None) and self.var_afiseaza_mentiuni_pdf.get()
+                )
                 conditii_pdf_activ = bool(getattr(self, "var_conditii_pdf", None) and self.var_conditii_pdf.get())
                 termen_livrare_zile = self._parse_termen_livrare_zile()
                 new_detalii = dumps_offer_items(
                     self.cos_cumparaturi,
                     mentiuni=mentiuni_text,
                     afiseaza_mentiuni_pdf=afiseaza_mentiuni_pdf,
-                    masuratori_lei=self.masuratori_lei,
-                    transport_lei=self.transport_lei,
+                    masuratori_lei=float(self.masuratori_lei or 0),
+                    transport_lei=float(self.transport_lei or 0),
                     conditii_pdf=conditii_pdf_activ,
                     termen_livrare_zile=termen_livrare_zile,
+                    costs_entered=True,
                 )
                 try:
                     update_offer_detalii(self.conn, self.cursor, offer_id, new_detalii)
                 except Exception:
                     logger.exception("Actualizare detalii ofertă (măsurători/transport) eșuată")
-            # Recalculează totalul cu serviciile suplimentare adăugate.
             try:
                 self.refresh_cos(readonly=getattr(self, "_win_oferta_readonly", False))
             except Exception:
                 self.refresh_cos()
 
-        def _on_sar():
-            win.destroy()
+        win.protocol("WM_DELETE_WINDOW", lambda: _finalize_costs_dialog(apply_entries=False))
 
         f_btns = ctk.CTkFrame(win, fg_color="transparent")
         f_btns.pack(fill="x", pady=(0, 12))
-        ctk.CTkButton(f_btns, text="Salvează valorile", fg_color="#2E7D32", command=_on_confirma).pack(
-            side="left", padx=(30, 10)
-        )
-        ctk.CTkButton(f_btns, text="Sari peste", fg_color="#3A3A3A", command=_on_sar).pack(
-            side="right", padx=(10, 30)
-        )
+        ctk.CTkButton(
+            f_btns,
+            text="Salvează valorile",
+            fg_color="#2E7D32",
+            command=lambda: _finalize_costs_dialog(apply_entries=True),
+        ).pack(side="left", padx=(30, 10))
+        ctk.CTkButton(
+            f_btns,
+            text="Sari peste",
+            fg_color="#3A3A3A",
+            command=lambda: _finalize_costs_dialog(apply_entries=False),
+        ).pack(side="right", padx=(10, 30))
 
         # Ținem deschis acest dialog până când utilizatorul îl închide (confirmă sau sare peste),
         # abia apoi continuă execuția funcției care a apelat acest dialog.

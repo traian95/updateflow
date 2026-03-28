@@ -18,12 +18,14 @@ def dumps_offer_items(
     termen_livrare_zile: str | int | None = None,
     modificat_de: str | None = None,
     modificat_la: str | None = None,
+    costs_entered: bool | None = None,
 ) -> str:
     """
     Serializează conținutul coșului + metadate (mentiuni, flag PDF, costuri suplimentare) într-un string.
 
     - Nou format (preferat): dict cu chei 'items', 'mentiuni', 'afiseaza_mentiuni_pdf',
-      opțional 'masuratori_lei', 'transport_lei', 'conditii_pdf', 'termen_livrare_zile'.
+      opțional 'masuratori_lei', 'transport_lei', 'conditii_pdf', 'termen_livrare_zile',
+      'costs_entered' (pasul costuri măsurători/transport a fost parcurs / valorile sunt definite).
     - Backwards compatible: dacă nu primim mentiuni, păstrăm structura veche (listă simplă).
     """
     if (
@@ -35,6 +37,7 @@ def dumps_offer_items(
         and termen_livrare_zile is None
         and modificat_de is None
         and modificat_la is None
+        and costs_entered is None
     ):
         # Comportament vechi: doar lista de produse.
         return json.dumps(items, ensure_ascii=False)
@@ -56,6 +59,8 @@ def dumps_offer_items(
         payload["modificat_de"] = str(modificat_de).strip()
     if modificat_la:
         payload["modificat_la"] = str(modificat_la).strip()
+    if costs_entered is not None:
+        payload["costs_entered"] = bool(costs_entered)
     return json.dumps(payload, ensure_ascii=False)
 
 

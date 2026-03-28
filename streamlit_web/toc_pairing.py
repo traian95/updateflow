@@ -15,6 +15,8 @@ def map_erkado_usa_finisaj_to_toc_finisaj(usa_finisaj: str) -> str | None:
         return "GREKO"
     if "LACUIT" in v:
         return "LACUIT"
+    if "0.2" in v or "0,2" in v:
+        return "CPL 0.2"
     if "PREMIUM" in v:
         return "CPL/ST PREMIUM"
     if "CPL" in v:

@@ -17,6 +17,32 @@ TABLE_USERS = "users"
 TABLE_SYNC_STATE = "sync_state"
 SCHEMA_VERSION_CURRENT = 9
 
+# Tocuri „Fix 90 MM” — prețuri EUR listă (fără TVA); conversia globală în LEI + TVA rămâne în ofertare.
+TOCURI_FIX90_TIP = "Fix 90 MM"
+TOCURI_FIX90_DIM = "90 MM"
+
+
+def _norm_toc_dimensiune(d: str) -> str:
+    return str(d or "").replace(" ", "").strip().lower()
+
+
+def _is_tocuri_fix90_mm(categorie: str, furnizor: str, tip_toc: str, dimensiune: str) -> bool:
+    if str(categorie or "") != "Tocuri" or str(furnizor or "") not in ("Stoc", "Erkado"):
+        return False
+    if str(tip_toc or "").strip() != TOCURI_FIX90_TIP:
+        return False
+    return _norm_toc_dimensiune(dimensiune) == _norm_toc_dimensiune(TOCURI_FIX90_DIM)
+
+
+def _tocuri_fix90_erkado_rows() -> list[tuple[str, str, float]]:
+    """(decor, finisaj, pret_eur) — finisaje aliniate cu maparea Erkado (CPL/ST PREMIUM, CPL 0.2, …)."""
+    return [
+        ("", "GREKO", 78.0),
+        ("", "CPL/ST PREMIUM", 86.0),
+        ("", "CPL 0.2", 100.0),
+        ("", "LACUIT", 173.0),
+    ]
+
 
 def _coerce_detalii_str(value: Any) -> str:
     """`detalii_oferta` trebuie să fie text; dacă primește dict/listă, o serializăm (evită chei extra la nivel de rând)."""
@@ -804,13 +830,24 @@ def search_produse(cursor, termen: str, limit: int = 80):
 def get_colectii_produse(cursor, categorie: str, furnizor: str, use_tip_toc: bool = False):
     rows = [r for r in _produse() if str(r.get("categorie") or "") == categorie and str(r.get("furnizor") or "") == furnizor]
     k = "tip_toc" if use_tip_toc else "colectie"
-    return [x for x in sorted({str(r.get(k) or "") for r in rows}) if x]
+    out = [x for x in sorted({str(r.get(k) or "") for r in rows}) if x]
+    if categorie == "Tocuri" and use_tip_toc and furnizor in ("Stoc", "Erkado") and TOCURI_FIX90_TIP not in out:
+        out = sorted(set(out) | {TOCURI_FIX90_TIP})
+    return out
 
 
 def get_modele_produse(cursor, categorie: str, furnizor: str, colectie_or_tip_toc: str, use_tip_toc: bool = False):
     rows = [r for r in _produse() if str(r.get("categorie") or "") == categorie and str(r.get("furnizor") or "") == furnizor]
     if use_tip_toc:
-        return [x for x in sorted({str(r.get("dimensiune") or "") for r in rows if str(r.get("tip_toc") or "") == colectie_or_tip_toc}) if x]
+        base = [x for x in sorted({str(r.get("dimensiune") or "") for r in rows if str(r.get("tip_toc") or "") == colectie_or_tip_toc}) if x]
+        if (
+            categorie == "Tocuri"
+            and furnizor in ("Stoc", "Erkado")
+            and str(colectie_or_tip_toc or "").strip() == TOCURI_FIX90_TIP
+        ):
+            if TOCURI_FIX90_DIM not in base:
+                base = sorted(set(base) | {TOCURI_FIX90_DIM})
+        return base
     return [x for x in sorted({str(r.get("model") or "") for r in rows if str(r.get("colectie") or "") == colectie_or_tip_toc})]
 
 
@@ -818,11 +855,22 @@ def get_pret_tocuri(cursor, categorie: str, furnizor: str, tip_toc: str, dimensi
     for r in _produse():
         if str(r.get("categorie") or "") == categorie and str(r.get("furnizor") or "") == furnizor and str(r.get("tip_toc") or "") == tip_toc and str(r.get("dimensiune") or "") == (dimensiune or ""):
             return (r.get("pret"),)
+    if _is_tocuri_fix90_mm(categorie, furnizor, tip_toc, dimensiune) and str(furnizor or "") == "Stoc":
+        return (68.0,)
     return None
 
 
 def get_decor_finisaj_pairs_tocuri(cursor, categorie: str, furnizor: str, tip_toc: str, dimensiune: str):
     vals = {(str(r.get("decor") or "").strip(), str(r.get("finisaj") or "").strip()) for r in _produse() if str(r.get("categorie") or "") == categorie and str(r.get("furnizor") or "") == furnizor and str(r.get("tip_toc") or "") == tip_toc and str(r.get("dimensiune") or "").replace(" ", "") == str(dimensiune or "").replace(" ", "")}
+    if (
+        categorie == "Tocuri"
+        and str(furnizor or "") == "Erkado"
+        and str(tip_toc or "").strip() == TOCURI_FIX90_TIP
+        and _norm_toc_dimensiune(dimensiune) == _norm_toc_dimensiune(TOCURI_FIX90_DIM)
+    ):
+        for d, f, _p in _tocuri_fix90_erkado_rows():
+            if d or f:
+                vals.add((d, f))
     return sorted([x for x in vals if x[0] or x[1]])
 
 
@@ -834,6 +882,11 @@ def get_pret_tocuri_finisaj(cursor, categorie: str, furnizor: str, tip_toc: str,
     for r in _produse():
         if str(r.get("categorie") or "") == categorie and str(r.get("furnizor") or "") == furnizor and str(r.get("tip_toc") or "") == tip_toc and str(r.get("dimensiune") or "").replace(" ", "") == str(dimensiune or "").replace(" ", "") and str(r.get("finisaj") or "").strip().lower() == str(finisaj or "").strip().lower():
             return (r.get("pret"),)
+    if _is_tocuri_fix90_mm(categorie, furnizor, tip_toc, dimensiune) and str(furnizor or "") == "Erkado":
+        fl = str(finisaj or "").strip().lower()
+        for _d, f, p in _tocuri_fix90_erkado_rows():
+            if str(f or "").strip().lower() == fl:
+                return (p,)
     return None
 
 
@@ -841,6 +894,14 @@ def get_pret_tocuri_decor_finisaj(cursor, categorie: str, furnizor: str, tip_toc
     for r in _produse():
         if str(r.get("categorie") or "") == categorie and str(r.get("furnizor") or "") == furnizor and str(r.get("tip_toc") or "") == tip_toc and str(r.get("dimensiune") or "").replace(" ", "") == str(dimensiune or "").replace(" ", "") and str(r.get("finisaj") or "").strip().lower() == str(finisaj or "").strip().lower() and str(r.get("decor") or "").strip().lower() == str(decor or "").strip().lower():
             return (r.get("pret"),)
+    if _is_tocuri_fix90_mm(categorie, furnizor, tip_toc, dimensiune) and str(furnizor or "") == "Erkado":
+        dl = str(decor or "").strip().lower()
+        fl = str(finisaj or "").strip().lower()
+        for d, f, p in _tocuri_fix90_erkado_rows():
+            if str(f or "").strip().lower() != fl:
+                continue
+            if str(d or "").strip().lower() == dl or not (d or "").strip():
+                return (p,)
     return get_pret_tocuri_finisaj(cursor, categorie, furnizor, tip_toc, dimensiune, finisaj)
 
 
