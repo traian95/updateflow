@@ -17,6 +17,19 @@ _SERVICII_FARA_DISCOUNT = frozenset({
 })
 
 
+def discount_price_factor(discount_proc: int) -> float:
+    """
+    Factor aplicat pe prețul supus discountului.
+    Pentru 10%: împărțire la 1.10 (echivalent net față de scăderea clasică de 10%).
+    """
+    d = int(discount_proc) if discount_proc else 0
+    if d <= 0:
+        return 1.0
+    if d == 10:
+        return 1.0 / 1.10
+    return 1.0 - d / 100.0
+
+
 def _is_item_fara_discount(item: dict[str, Any]) -> bool:
     """Discountul NU se aplică doar serviciilor suplimentare fixe din listă."""
     nume_norm = (item.get("nume") or "").strip().casefold()
@@ -235,7 +248,7 @@ def build_oferta_pret_pdf(
             if _is_item_fara_discount(item):
                 pret_unitar_ron_cu_discount = pl
             else:
-                pret_unitar_ron_cu_discount = pl * (1 - discount_proc / 100)
+                pret_unitar_ron_cu_discount = pl * discount_price_factor(discount_proc)
             pret_unitar_ron = pret_unitar_ron_fara_discount
             pret_eur = 0.0
             qty = item.get("qty") or 1
@@ -246,7 +259,9 @@ def build_oferta_pret_pdf(
             if _is_item_fara_discount(item):
                 pret_unitar_ron_cu_discount = pret_unitar_ron_fara_discount
             else:
-                pret_unitar_ron_cu_discount = (pret_eur * (1 - discount_proc / 100) * (1 + tva_procent / 100)) * curs_euro
+                pret_unitar_ron_cu_discount = (
+                    pret_eur * discount_price_factor(discount_proc) * (1 + tva_procent / 100)
+                ) * curs_euro
             # În tabel afișăm prețurile înainte de discount, ca să fie coerente cu
             # „Valoare totală (TVA inclus)” din secțiunea de totaluri.
             pret_unitar_ron = pret_unitar_ron_fara_discount
@@ -299,13 +314,13 @@ def build_oferta_pret_pdf(
     sum_eng_disc_pdf = sum(
         float(i.get("pret_lei_cu_tva") or 0)
         * (i.get("qty") or 1)
-        * (1.0 if _is_item_fara_discount(i) else (1 - discount_proc / 100))
+        * (1.0 if _is_item_fara_discount(i) else discount_price_factor(discount_proc))
         for i in cos_cumparaturi
         if i.get("tip") == "manere_engs"
     )
     total_fara_disc_lei = (total_eur_pdf * (1 + tva_procent / 100)) * curs_euro + sum_eng_baza_pdf
     total_cu_disc_calculat_lei = (
-        (total_eur_discountabil * (1 - discount_proc / 100) + total_eur_fara_discount)
+        (total_eur_discountabil * discount_price_factor(discount_proc) + total_eur_fara_discount)
         * (1 + tva_procent / 100)
         * curs_euro
         + sum_eng_disc_pdf
@@ -477,11 +492,13 @@ def genereaza_pdf_oferta(
             if _is_item_fara_discount(item):
                 pret_unitar_lei = pl
             else:
-                pret_unitar_lei = pl * (1 - discount_proc / 100)
+                pret_unitar_lei = pl * discount_price_factor(discount_proc)
         elif _is_item_fara_discount(item):
             pret_unitar_lei = pret_eur * (1 + tva_procent / 100) * curs_euro
         else:
-            pret_unitar_lei = pret_eur * (1 - discount_proc / 100) * (1 + tva_procent / 100) * curs_euro
+            pret_unitar_lei = (
+                pret_eur * discount_price_factor(discount_proc) * (1 + tva_procent / 100) * curs_euro
+            )
         pret_total_rand_lei = pret_unitar_lei * qty
         pdf.cell(100, 8, f" {nume}", 1)
         pdf.cell(20, 8, str(qty), 1, 0, "C")

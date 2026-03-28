@@ -1,9 +1,12 @@
+import json
+import re
 import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterable, Optional
 
+import requests
 from supabase import Client, create_client
 
 TABLE_PRODUSE = "produse"
@@ -13,6 +16,62 @@ TABLE_SCHEMA_VERSION = "schema_version"
 TABLE_USERS = "users"
 TABLE_SYNC_STATE = "sync_state"
 SCHEMA_VERSION_CURRENT = 9
+
+
+def _coerce_detalii_str(value: Any) -> str:
+    """`detalii_oferta` trebuie să fie text; dacă primește dict/listă, o serializăm (evită chei extra la nivel de rând)."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _build_oferte_insert_row(
+    id_client: int,
+    detalii_oferta: Any,
+    total_lei: float,
+    data_oferta: str,
+    nume_client_temp: str,
+    utilizator_creat: str,
+    discount_proc: int,
+    curs_euro: float,
+    safe_mode_enabled: int,
+) -> dict[str, Any]:
+    """Exact coloanele din `public.oferte` — fără chei suplimentare (PGRST204)."""
+    return {
+        "id_client": int(id_client),
+        "detalii_oferta": _coerce_detalii_str(detalii_oferta),
+        "total_lei": float(total_lei),
+        "data_oferta": str(data_oferta or ""),
+        "nume_client_temp": str(nume_client_temp or ""),
+        "utilizator_creat": str(utilizator_creat or ""),
+        "discount_proc": int(discount_proc),
+        "curs_euro": float(curs_euro),
+        "safe_mode_enabled": 1 if safe_mode_enabled else 0,
+    }
+
+
+def _build_oferte_update_full_row(
+    id_client: int,
+    detalii_oferta: Any,
+    total_lei: float,
+    data_oferta: str,
+    nume_client_temp: str,
+    discount_proc: int,
+    curs_euro: float,
+    safe_mode_enabled: int,
+) -> dict[str, Any]:
+    return {
+        "id_client": int(id_client),
+        "detalii_oferta": _coerce_detalii_str(detalii_oferta),
+        "total_lei": float(total_lei),
+        "data_oferta": str(data_oferta or ""),
+        "nume_client_temp": str(nume_client_temp or ""),
+        "discount_proc": int(discount_proc),
+        "curs_euro": float(curs_euro),
+        "safe_mode_enabled": 1 if safe_mode_enabled else 0,
+    }
 SUPABASE_URL = "https://ingtefnrfjjribocqtgy.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImluZ3RlZm5yZmpqcmlib2NxdGd5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQwMjYyMjIsImV4cCI6MjA4OTYwMjIyMn0.mNinufQ1lIu02SXENo4LR1bvx3iRo5PuiwifwRDvEpQ"
 
@@ -80,6 +139,114 @@ def _invalidate(*tables: str) -> None:
     for t in tables:
         _CACHE.pop(t, None)
         _CACHE_TS.pop(t, None)
+
+
+def _supabase_rest_v1_root() -> str:
+    return f"{SUPABASE_URL.strip().rstrip('/')}/rest/v1"
+
+
+def _postgrest_headers(*, return_representation: bool = True) -> dict[str, str]:
+    k = SUPABASE_KEY.strip()
+    h: dict[str, str] = {
+        "apikey": k,
+        "Authorization": f"Bearer {k}",
+        "Content-Type": "application/json; charset=utf-8",
+        "Accept": "application/json",
+    }
+    if return_representation:
+        h["Prefer"] = "return=representation"
+    return h
+
+
+def _postgrest_headers_minimal() -> dict[str, str]:
+    k = SUPABASE_KEY.strip()
+    return {
+        "apikey": k,
+        "Authorization": f"Bearer {k}",
+        "Content-Type": "application/json; charset=utf-8",
+        "Accept": "application/json",
+        "Prefer": "return=minimal",
+    }
+
+
+def _parse_new_row_id_from_postgrest_headers(resp: requests.Response) -> Optional[int]:
+    loc = resp.headers.get("Content-Location") or resp.headers.get("Location") or ""
+    m = re.search(r"id=eq\.(\d+)", loc)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def _postgrest_insert_oferte_row(payload: dict[str, Any]) -> dict[str, Any]:
+    """POST direct la PostgREST; `select=id` + fallback `return=minimal` (evită PGRST204 pe cache cu coloane fantomă la RETURN)."""
+    url = f"{_supabase_rest_v1_root()}/{TABLE_OFERTE}"
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    _verbose_log("INSERT oferte RAW JSON prefix", body[:500])
+
+    r = requests.post(
+        url,
+        params={"select": "id"},
+        headers=_postgrest_headers(return_representation=True),
+        data=body.encode("utf-8"),
+        timeout=90,
+    )
+    if r.status_code < 400:
+        if (r.text or "").strip():
+            try:
+                data = r.json()
+                if isinstance(data, list) and data:
+                    return dict(data[0])
+            except Exception:
+                pass
+        rid = _parse_new_row_id_from_postgrest_headers(r)
+        if rid is not None:
+            return {"id": rid}
+        return {}
+
+    err_first = (r.text or "").strip()
+    _verbose_log("INSERT oferte select=id failed, retry minimal", {"status": r.status_code, "body": err_first[:400]})
+
+    r2 = requests.post(
+        url,
+        headers=_postgrest_headers_minimal(),
+        data=body.encode("utf-8"),
+        timeout=90,
+    )
+    if r2.status_code >= 400:
+        raise RuntimeError(err_first or (r2.text or "").strip() or f"HTTP {r2.status_code}")
+    rid = _parse_new_row_id_from_postgrest_headers(r2)
+    if rid is None:
+        raise RuntimeError(
+            "INSERT oferte: nu s-a putut determina id-ul noului rând. "
+            f"Prima încercare: {err_first[:500]}"
+        )
+    return {"id": rid}
+
+
+def _postgrest_patch_oferte_row(offer_id: int, payload: dict[str, Any]) -> None:
+    url = f"{_supabase_rest_v1_root()}/{TABLE_OFERTE}"
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    _verbose_log("PATCH oferte RAW JSON prefix", body[:500])
+    params = {"id": f"eq.{int(offer_id)}", "select": "id"}
+    r = requests.patch(
+        url,
+        headers=_postgrest_headers(return_representation=True),
+        params=params,
+        data=body.encode("utf-8"),
+        timeout=90,
+    )
+    if r.status_code >= 400:
+        err_first = (r.text or "").strip()
+        _verbose_log("PATCH oferte select=id failed, retry minimal", {"status": r.status_code, "body": err_first[:400]})
+        r2 = requests.patch(
+            url,
+            headers=_postgrest_headers_minimal(),
+            params={"id": f"eq.{int(offer_id)}"},
+            data=body.encode("utf-8"),
+            timeout=90,
+        )
+        if r2.status_code >= 400:
+            raise RuntimeError(err_first or (r2.text or "").strip() or f"HTTP {r2.status_code}")
 
 
 class CloudCursor:
@@ -302,24 +469,25 @@ def get_istoric_oferte(
 
 
 def insert_offer(conn, cursor, id_client: int, detalii_oferta: str, total_lei: float, data_oferta: str, nume_client_temp: str, utilizator_creat: str, discount_proc: int, curs_euro: float, safe_mode_enabled: int = 1) -> int:
-    payload = {
-        "id_client": id_client,
-        "detalii_oferta": detalii_oferta,
-        "total_lei": total_lei,
-        "data_oferta": data_oferta,
-        "nume_client_temp": nume_client_temp,
-        "utilizator_creat": utilizator_creat,
-        "discount_proc": discount_proc,
-        "curs_euro": curs_euro,
-        "safe_mode_enabled": 1 if safe_mode_enabled else 0,
-    }
+    payload = _build_oferte_insert_row(
+        id_client,
+        detalii_oferta,
+        total_lei,
+        data_oferta,
+        nume_client_temp,
+        utilizator_creat,
+        discount_proc,
+        curs_euro,
+        safe_mode_enabled,
+    )
+    _verbose_log("INSERT oferte payload keys", list(payload.keys()))
     _verbose_log("INSERT oferte payload", payload)
     started = time.perf_counter()
-    res = _get_supabase_client().table(TABLE_OFERTE).insert(payload).execute()
+    row = _postgrest_insert_oferte_row(payload)
     elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
-    _verbose_log("INSERT oferte response", {"elapsed_ms": elapsed_ms, "data": res.data, "count": res.count})
+    _verbose_log("INSERT oferte response", {"elapsed_ms": elapsed_ms, "data": row})
     _invalidate(TABLE_OFERTE)
-    return int((res.data or [{}])[0].get("id") or 0)
+    return int(row.get("id") or 0)
 
 
 def update_avans(conn, cursor, offer_id: int, value: int) -> None:
@@ -328,7 +496,7 @@ def update_avans(conn, cursor, offer_id: int, value: int) -> None:
 
 
 def update_offer_detalii(conn, cursor, offer_id: int, detalii_oferta: str) -> None:
-    payload = {"detalii_oferta": detalii_oferta}
+    payload = {"detalii_oferta": _coerce_detalii_str(detalii_oferta)}
     _verbose_log("UPDATE oferte payload", {"id": offer_id, **payload})
     started = time.perf_counter()
     res = _get_supabase_client().table(TABLE_OFERTE).update(payload).eq("id", offer_id).execute()
@@ -337,11 +505,76 @@ def update_offer_detalii(conn, cursor, offer_id: int, detalii_oferta: str) -> No
     _invalidate(TABLE_OFERTE)
 
 
-def get_offer_snapshot(cursor, offer_id: int) -> Optional[dict[str, Any]]:
+def _fetch_offer_row_by_id(offer_id: int) -> Optional[dict[str, Any]]:
+    """O singură ofertă direct din PostgREST (fără cache listă completă)."""
+    try:
+        res = (
+            _get_supabase_client()
+            .table(TABLE_OFERTE)
+            .select("*")
+            .eq("id", int(offer_id))
+            .limit(1)
+            .execute()
+        )
+        row = (res.data or [None])[0]
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def get_offer_snapshot(cursor, offer_id: int, force_refresh: bool = False) -> Optional[dict[str, Any]]:
+    if force_refresh:
+        live = _fetch_offer_row_by_id(offer_id)
+        if live is not None:
+            return live
     for r in _rows(TABLE_OFERTE):
         if int(r.get("id") or 0) == int(offer_id):
             return dict(r)
     return None
+
+
+def _detalii_text_matches(stored: str, expected: str) -> bool:
+    if (stored or "").strip() == (expected or "").strip():
+        return True
+    try:
+        return json.loads(stored or "null") == json.loads(expected or "null")
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return False
+
+
+def _offer_row_matches_full_update(
+    row: dict[str, Any],
+    *,
+    detalii_oferta: str,
+    total_lei: float,
+    data_oferta: str,
+    nume_client_temp: str,
+    id_client: int,
+    discount_proc: int,
+    curs_euro: float,
+    safe_mode_enabled: int,
+) -> bool:
+    if int(row.get("id_client") or 0) != int(id_client):
+        return False
+    if str(row.get("data_oferta") or "").strip() != str(data_oferta or "").strip():
+        return False
+    if str(row.get("nume_client_temp") or "").strip() != str(nume_client_temp or "").strip():
+        return False
+    if int(row.get("discount_proc") or 0) != int(discount_proc):
+        return False
+    try:
+        if abs(float(row.get("total_lei") or 0) - float(total_lei)) > 0.05:
+            return False
+    except (TypeError, ValueError):
+        return False
+    try:
+        if abs(float(row.get("curs_euro") or 0) - float(curs_euro)) > 0.001:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if int(row.get("safe_mode_enabled") or 0) != (1 if safe_mode_enabled else 0):
+        return False
+    return _detalii_text_matches(str(row.get("detalii_oferta") or ""), detalii_oferta)
 
 
 def update_offer_full(
@@ -358,22 +591,49 @@ def update_offer_full(
     safe_mode_enabled: int = 1,
 ) -> None:
     """Actualizează oferta existentă fără duplicat; `utilizator_creat` rămâne neschimbat."""
-    payload = {
-        "id_client": id_client,
-        "detalii_oferta": detalii_oferta,
-        "total_lei": total_lei,
-        "data_oferta": data_oferta,
-        "nume_client_temp": nume_client_temp,
-        "discount_proc": discount_proc,
-        "curs_euro": curs_euro,
-        "safe_mode_enabled": 1 if safe_mode_enabled else 0,
-    }
-    _verbose_log("UPDATE oferte (full) payload", {"id": offer_id, **payload})
+    detalii_norm = _coerce_detalii_str(detalii_oferta)
+    payload = _build_oferte_update_full_row(
+        id_client,
+        detalii_norm,
+        total_lei,
+        data_oferta,
+        nume_client_temp,
+        discount_proc,
+        curs_euro,
+        safe_mode_enabled,
+    )
+    oid = int(offer_id)
+    _verbose_log("UPDATE oferte (full) payload", {"id": oid, **payload})
     started = time.perf_counter()
-    res = _get_supabase_client().table(TABLE_OFERTE).update(payload).eq("id", offer_id).execute()
+    _postgrest_patch_oferte_row(oid, payload)
     elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
-    _verbose_log("UPDATE oferte (full) response", {"elapsed_ms": elapsed_ms, "data": res.data, "count": res.count})
+    _verbose_log("UPDATE oferte (full) done", {"elapsed_ms": elapsed_ms})
     _invalidate(TABLE_OFERTE)
+
+    verified = False
+    for attempt in range(6):
+        if attempt:
+            time.sleep(0.08 * attempt)
+        verify = _fetch_offer_row_by_id(oid)
+        if verify and _offer_row_matches_full_update(
+            verify,
+            detalii_oferta=detalii_norm,
+            total_lei=total_lei,
+            data_oferta=data_oferta,
+            nume_client_temp=nume_client_temp,
+            id_client=id_client,
+            discount_proc=discount_proc,
+            curs_euro=curs_euro,
+            safe_mode_enabled=safe_mode_enabled,
+        ):
+            verified = True
+            break
+    if not verified:
+        raise RuntimeError(
+            "UPDATE oferte: modificarea nu s-a regăsit în baza de date după salvare. "
+            "Cauze frecvente: politici RLS în Supabase care blochează UPDATE sau SELECT pe «oferte», "
+            "sau ID ofertă inexistent. Verifică în dashboard Supabase → Authentication → Policies."
+        )
 
 
 def delete_offer(conn, cursor, offer_id: int) -> None:
