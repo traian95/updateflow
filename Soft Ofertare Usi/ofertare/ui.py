@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import threading
+import uuid
 import sqlite3
 import re
 import unicodedata
@@ -70,7 +71,12 @@ from .db import (
     delete_offer,
 )
 from .paths import resolve_asset_path
-from .pdf_export import apply_majuscule_line_stoc_erkado, build_oferta_pret_pdf, discount_price_factor
+from .pdf_export import (
+    apply_majuscule_line_stoc_erkado,
+    build_oferta_pret_pdf,
+    discount_price_factor,
+    format_nume_maner_afisare,
+)
 from .serialization import dumps_offer_items, get_offer_modificare_meta, loads_offer_items
 from .services import fetch_bnr_eur_rate
 from .updater import check_for_updates, get_local_version, install_zip_update
@@ -121,13 +127,49 @@ def _open_path_in_default_app(path: str) -> None:
 # Mânere Enger: prețul mânerului în DB este pe linia cu Tip Element «Măner» (CSV).
 MANER_ENGER_DECOR_MANER = "Măner"
 
+BROASCA_WC_NUME = "Broasca WC"
+BROASCA_CILINDRU_NUME = "Broasca Cilindru"
+BROASCA_MANER_PRET_EUR = 6.0
+
+
+def _maner_broasca_tip_engs_inc(inc: str) -> str | None:
+    """WC → broasca WC; OB/PZ → broasca cilindru (catalog Enger)."""
+    u = (inc or "").strip().upper()
+    if u == "WC":
+        return "wc"
+    if u in ("OB", "PZ"):
+        return "cilindru"
+    return None
+
+
+def _maner_broasca_tip_decor_text(dec: str) -> str | None:
+    """Detectează din textul decorului (Stoc/Erkado) cerința de broască."""
+    if not (dec or "").strip():
+        return None
+    nfd = unicodedata.normalize("NFD", dec)
+    s = "".join(c for c in nfd if unicodedata.category(c) != "Mn").casefold()
+    if re.search(r"\bwc\b", s):
+        return "wc"
+    if "cilindru" in s:
+        return "cilindru"
+    if re.search(r"\b(ob|pz)\b", s):
+        return "cilindru"
+    return None
+
+
+def _maner_broasca_tip_stoc_manere_fields(colectie: str, model: str, decor_display: str) -> str | None:
+    """WC/Cilindru pot apărea în colecție sau model (ex. «LOFT * WC»), nu doar în decor."""
+    blob = " ".join((p or "").strip() for p in (colectie, model, decor_display) if (p or "").strip())
+    return _maner_broasca_tip_decor_text(blob)
+
 
 def _nume_linie_maner_engs(model: str, fin: str, inc: str) -> str:
-    """Denumire în ofertă/PDF: MANER + date, fără diacritice, tot cu majuscule."""
-    raw = f"MANER {model} {fin} {inc}"
+    """Denumire internă coș: «Maner (…)»; afișarea Enger normalizează din prefixul MANER dacă e cazul."""
+    raw = f"{model} {fin} {inc}"
     nfd = unicodedata.normalize("NFD", raw)
     fara = "".join(c for c in nfd if unicodedata.category(c) != "Mn")
-    return fara.upper()
+    inner = fara.upper().strip()
+    return f"Maner ({inner})"
 # Corporate palette (flat, muted)
 CORP_WINDOW_BG = "#1E1E1E"
 # Fundal „Iron Curtain” / root: același gri foarte închis, fără flash alb la sistem
@@ -229,6 +271,8 @@ _SERVICII_FARA_DISCOUNT = frozenset({
     "scurtare set usa +toc",
     "redimensionare k",
     "redimensionare sus-jos",
+    "broasca wc",
+    "broasca cilindru",
 })
 
 # Configurare temă (keep identical)
@@ -1460,6 +1504,142 @@ class AplicatieOfertare(ctk.CTk):
         msg_win.grab_set()
         ctk.CTkLabel(msg_win, text=mesaj, font=("Segoe UI", 14, "bold"), wraplength=350).pack(expand=True, pady=20)
         ctk.CTkButton(msg_win, text="OK", fg_color=culoare, width=120, command=msg_win.destroy).pack(pady=20)
+
+    def show_success_toast(self, mesaj: str, style: str = "green", *, duration_ms: int = 2400) -> None:
+        """Toast fără blocare UI: colț dreapta-jos, slide-up, înlocuiește toast-ul anterior."""
+        themes = {
+            "green": {"bg": "#14532d", "border": "#22c55e", "fg": "#ecfdf5"},
+            "blue": {"bg": "#1e3a5f", "border": "#3b82f6", "fg": "#dbeafe"},
+            "yellow": {"bg": "#422006", "border": "#eab308", "fg": "#fef9c3"},
+            "broasca_wc": {"bg": "#1e3a5f", "border": "#3b82f6", "fg": "#dbeafe"},
+            "broasca_cil": {"bg": "#422006", "border": "#ea580c", "fg": "#ffedd5"},
+            "warning": {"bg": "#450a0a", "border": "#f97316", "fg": "#ffedd5"},
+        }
+        th = themes.get(style, themes["green"])
+
+        close_id = getattr(self, "_toast_close_after_id", None)
+        if close_id is not None:
+            try:
+                self.after_cancel(close_id)
+            except Exception:
+                pass
+            self._toast_close_after_id = None
+
+        anim_id = getattr(self, "_toast_anim_after_id", None)
+        if anim_id is not None:
+            try:
+                self.after_cancel(anim_id)
+            except Exception:
+                pass
+            self._toast_anim_after_id = None
+
+        tw_old = getattr(self, "_toast_window", None)
+        if tw_old is not None:
+            try:
+                if tw_old.winfo_exists():
+                    tw_old.destroy()
+            except Exception:
+                pass
+            self._toast_window = None
+
+        parent = self
+        try:
+            if getattr(self, "win_oferta", None) and self.win_oferta.winfo_exists():
+                parent = self.win_oferta
+        except Exception:
+            parent = self
+
+        tw = ctk.CTkToplevel(parent)
+        self._toast_window = tw
+        tw.overrideredirect(True)
+        try:
+            tw.attributes("-topmost", True)
+        except Exception:
+            pass
+
+        fr = ctk.CTkFrame(
+            tw,
+            fg_color=th["bg"],
+            corner_radius=10,
+            border_width=2,
+            border_color=th["border"],
+        )
+        fr.pack(fill="both", expand=True)
+        ctk.CTkLabel(
+            fr,
+            text=mesaj,
+            font=("Segoe UI", 13, "bold"),
+            text_color=th["fg"],
+            wraplength=280,
+        ).pack(padx=18, pady=14)
+
+        tw.update_idletasks()
+        w = max(200, fr.winfo_reqwidth() + 16)
+        h = fr.winfo_reqheight() + 16
+
+        margin = 16
+        slide_px = 48
+        steps = 10
+        step_ms = 18
+
+        try:
+            parent.update_idletasks()
+            prx = parent.winfo_rootx()
+            pry = parent.winfo_rooty()
+            prw = max(parent.winfo_width(), 1)
+            prh = max(parent.winfo_height(), 1)
+            final_x = prx + prw - w - margin
+            final_y = pry + prh - h - margin
+            start_y = final_y + slide_px
+        except Exception:
+            final_x, final_y, start_y = 0, 0, 0
+
+        tw.geometry(f"{w}x{h}+{final_x}+{start_y}")
+
+        def animate(step: int) -> None:
+            if not tw.winfo_exists():
+                self._toast_anim_after_id = None
+                return
+            try:
+                parent.update_idletasks()
+                prx2 = parent.winfo_rootx()
+                pry2 = parent.winfo_rooty()
+                prw2 = max(parent.winfo_width(), 1)
+                prh2 = max(parent.winfo_height(), 1)
+                fy = pry2 + prh2 - h - margin
+                sy = fy + slide_px
+                t = (step + 1) / float(steps)
+                ease = 1.0 - (1.0 - t) ** 3
+                y = int(sy + (fy - sy) * ease)
+                fx = prx2 + prw2 - w - margin
+                tw.geometry(f"{w}x{h}+{fx}+{y}")
+            except Exception:
+                pass
+            if step + 1 < steps:
+                self._toast_anim_after_id = self.after(step_ms, lambda s=step + 1: animate(s))
+            else:
+                self._toast_anim_after_id = None
+
+        self.after(1, lambda: animate(0))
+
+        def _close_toast() -> None:
+            self._toast_close_after_id = None
+            anim_rem = getattr(self, "_toast_anim_after_id", None)
+            if anim_rem is not None:
+                try:
+                    self.after_cancel(anim_rem)
+                except Exception:
+                    pass
+                self._toast_anim_after_id = None
+            try:
+                if tw.winfo_exists():
+                    tw.destroy()
+            except Exception:
+                pass
+            if getattr(self, "_toast_window", None) is tw:
+                self._toast_window = None
+
+        self._toast_close_after_id = self.after(max(800, int(duration_ms)), _close_toast)
 
     def _afiseaza_confirmare_pdf_desktop(self, cale_pdf: str) -> None:
         """
@@ -3424,6 +3604,14 @@ class AplicatieOfertare(ctk.CTk):
             f_btns.pack(pady=(0, 20))
             def _salveaza_si_inchide():
                 dlg.destroy()
+                ok_br, _ = self._validare_broasca_manere()
+                if not ok_br:
+                    self.show_success_toast(
+                        "Atentie! Lipseste Broasca WC/Cilindru pentru manerul selectat! ⚠️",
+                        "warning",
+                        duration_ms=4000,
+                    )
+                    return
                 ok, mesaj = self._validare_oferta_usi_tocuri()
                 if not ok:
                     self.afiseaza_mesaj("Oferta nu poate fi salvată", mesaj + "\n\nOferta rămâne deschisă.", "#7a1a1a")
@@ -4441,7 +4629,8 @@ class AplicatieOfertare(ctk.CTk):
             self.afiseaza_mesaj("Atenție", "Alege model, finisaj și tip închidere (OB / PZ / WC).", "#7a1a1a")
             return
         nume = _nume_linie_maner_engs(model, fin, inc)
-        self.cos_cumparaturi.append(
+        tip_b = _maner_broasca_tip_engs_inc(inc)
+        self._cos_append_maner_cu_broasca_optional(
             {
                 "nume": nume,
                 "tip": "manere_engs",
@@ -4449,9 +4638,9 @@ class AplicatieOfertare(ctk.CTk):
                 "pret_eur": 0.0,
                 "qty": 1,
                 "furnizor": "Enger",
-            }
+            },
+            tip_b,
         )
-        self.refresh_cos()
 
     def on_colectie_select(self, titlu):
         if titlu == "Manere":
@@ -4479,6 +4668,13 @@ class AplicatieOfertare(ctk.CTk):
         self.config_widgets[titlu]["model"].set(ph_mod)
         if self.config_widgets[titlu].get("decor"):
             self.config_widgets[titlu]["decor"].configure(state="disabled")
+        if titlu not in self.CATEGORII_PARCHET:
+            wz = self.config_widgets[titlu]
+            wz["pret_val"] = 0.0
+            pd0 = wz.get("pret_display")
+            if pd0:
+                pd0.configure(text="Preț: —")
+            wz["buton"].configure(state="disabled")
         if titlu in self.CATEGORII_PARCHET:
             w = self.config_widgets[titlu]
             w["lbl_mp_cut"].configure(text="MP/cut: —")
@@ -4641,6 +4837,12 @@ class AplicatieOfertare(ctk.CTk):
         ph_decor = self.config_widgets[titlu].get("_ph_decor") or "Alege Decor"
         self.config_widgets[titlu]["decor"].set(ph_decor)
 
+        if not (titlu == "Tocuri" and values):
+            w = self.config_widgets[titlu]
+            w["pret_val"] = 0.0
+            w["pret_display"].configure(text="Preț: —")
+            w["buton"].configure(state="disabled")
+
         # Pentru Tocuri: finisajul este criteriul care determină prețul.
         # Selectăm automat primul finisaj ca să se afișeze imediat prețul și să se activeze butonul.
         if titlu == "Tocuri" and values:
@@ -4720,8 +4922,22 @@ class AplicatieOfertare(ctk.CTk):
                 w["buton"].configure(state="disabled")
             return
 
-        pairs = self.config_widgets[titlu].get("decor_finisaj_pairs") or []
-        values = self.config_widgets[titlu]["decor"].cget("values") or []
+        wcfg = self.config_widgets[titlu]
+        ph_mod = wcfg.get("_ph_model") or "Alege Model"
+        ph_decor = wcfg.get("_ph_decor") or "Alege Decor"
+        if not mod or mod == ph_mod:
+            wcfg["pret_val"] = 0.0
+            wcfg["pret_display"].configure(text="Preț: —")
+            wcfg["buton"].configure(state="disabled")
+            return
+        if not sel or sel == ph_decor:
+            wcfg["pret_val"] = 0.0
+            wcfg["pret_display"].configure(text="Preț: —")
+            wcfg["buton"].configure(state="disabled")
+            return
+
+        pairs = wcfg.get("decor_finisaj_pairs") or []
+        values = wcfg["decor"].cget("values") or []
         try:
             idx = list(values).index(sel)
             dec, fin = pairs[idx]
@@ -4729,11 +4945,15 @@ class AplicatieOfertare(ctk.CTk):
             dec, fin = sel, ""
         res = get_pret_decor_finisaj(self.cursor, titlu, col, mod, furnizor, dec, fin)
         if res:
-            self.config_widgets[titlu]["pret_val"] = res[0]
-            self.config_widgets[titlu]["pret_display"].configure(text=f"Preț: {res[0]} €")
-            self.config_widgets[titlu]["buton"].configure(
+            wcfg["pret_val"] = res[0]
+            wcfg["pret_display"].configure(text=f"Preț: {res[0]} €")
+            wcfg["buton"].configure(
                 state="normal", command=lambda t=titlu: self.adauga_in_cos_config(t)
             )
+        else:
+            wcfg["pret_val"] = 0.0
+            wcfg["pret_display"].configure(text="Preț: —")
+            wcfg["buton"].configure(state="disabled")
 
     def _on_decor_text_change(self, titlu: str):
         """Transformă automat în MAJUSCULE textul introdus pentru decor liber (Erkado)."""
@@ -4824,6 +5044,185 @@ class AplicatieOfertare(ctk.CTk):
             return parsed
         return "Stoc"
 
+    def _cos_row_accent_for_item(self, item: dict) -> str | None:
+        """Culoare rând coș: verde DEBARA, albastru dublă/dublu, galben glisantă / toc tunel / kit glisare (vizual)."""
+        nume_poz = (item.get("nume") or "").strip()
+        if nume_poz in ("Sistem Glisare + Masca", "Kit Glisare Simplu Peste Perete"):
+            return "yellow"
+        tip = self._get_item_tip(item)
+        if tip not in ("usi", "tocuri"):
+            return None
+        if item.get("debara") or item.get("debara_toc"):
+            return "green"
+        if item.get("dubla") in ("usa", "toc"):
+            return "blue"
+        if tip == "usi" and item.get("glisare_activ"):
+            return "yellow"
+        if tip == "tocuri" and item.get("toc_tunel"):
+            return "yellow"
+        return None
+
+    def _cos_row_frame_kwargs(self, accent: str | None) -> dict:
+        if accent == "green":
+            return {
+                "fg_color": "#14532d",
+                "corner_radius": 8,
+                "border_width": 2,
+                "border_color": "#22c55e",
+            }
+        if accent == "yellow":
+            return {
+                "fg_color": "#422006",
+                "corner_radius": 8,
+                "border_width": 2,
+                "border_color": "#eab308",
+            }
+        if accent == "blue":
+            return {
+                "fg_color": "#1e3a5f",
+                "corner_radius": 8,
+                "border_width": 2,
+                "border_color": "#3b82f6",
+            }
+        return {"fg_color": "#2D2D2D", "corner_radius": 6, "border_width": 0}
+
+    def _cos_row_title_text_color(self, accent: str | None):
+        if accent == "green":
+            return "#ecfdf5"
+        if accent == "yellow":
+            return "#fef9c3"
+        if accent == "blue":
+            return "#93c5fd"
+        return None
+
+    def _strip_usa_debara_state(self, idx: int) -> None:
+        """Revine la preț fără DEBARA pe ușă (fără refresh)."""
+        if idx < 0 or idx >= len(self.cos_cumparaturi):
+            return
+        item = self.cos_cumparaturi[idx]
+        if self._get_item_tip(item) != "usi" or not item.get("debara"):
+            return
+        baza = float(item.get("pret_eur_fara_debara") or item.get("pret_eur") or 0)
+        item["pret_eur"] = round(baza, 2)
+        item.pop("debara", None)
+        item.pop("pret_eur_fara_debara", None)
+
+    def _is_stoc_usa_pt_debara(self, item: dict) -> bool:
+        """True pentru ușă de interior Stoc — multiplicatorii Debară se aplică doar aici (is_stoc în specificație)."""
+        return self._get_item_tip(item) == "usi" and self._get_furnizor_from_item(item) == "Stoc"
+
+    def _stoc_pairing_index_usa(self, idx_usa: int) -> int | None:
+        item = self.cos_cumparaturi[idx_usa]
+        if self._get_item_tip(item) != "usi" or self._get_furnizor_from_item(item) != "Stoc":
+            return None
+        k = 0
+        for j, it in enumerate(self.cos_cumparaturi):
+            if j == idx_usa:
+                return k
+            if self._get_item_tip(it) == "usi" and self._get_furnizor_from_item(it) == "Stoc":
+                k += 1
+        return None
+
+    def _stoc_pairing_index_toc(self, idx_toc: int) -> int | None:
+        item = self.cos_cumparaturi[idx_toc]
+        if self._get_item_tip(item) != "tocuri" or self._get_furnizor_from_item(item) != "Stoc":
+            return None
+        k = 0
+        for j, it in enumerate(self.cos_cumparaturi):
+            if j == idx_toc:
+                return k
+            if self._get_item_tip(it) == "tocuri" and self._get_furnizor_from_item(it) == "Stoc":
+                k += 1
+        return None
+
+    def _find_usa_pentru_toc_stoc(self, idx_toc: int) -> int | None:
+        pi = self._stoc_pairing_index_toc(idx_toc)
+        if pi is None:
+            return None
+        k = 0
+        for j, it in enumerate(self.cos_cumparaturi):
+            if self._get_item_tip(it) == "usi" and self._get_furnizor_from_item(it) == "Stoc":
+                if k == pi:
+                    return j
+                k += 1
+        return None
+
+    def _find_toc_pentru_usa_stoc(self, idx_usa: int) -> int | None:
+        pi = self._stoc_pairing_index_usa(idx_usa)
+        if pi is None:
+            return None
+        k = 0
+        for j, it in enumerate(self.cos_cumparaturi):
+            if self._get_item_tip(it) == "tocuri" and self._get_furnizor_from_item(it) == "Stoc":
+                if k == pi:
+                    return j
+                k += 1
+        return None
+
+    def _toc_tip_reglabil_stoc(self, item: dict) -> bool:
+        tip = (item.get("toc_tip_toc") or "").strip().lower()
+        if "reglabil" in tip:
+            return True
+        return "reglabil" in (item.get("nume") or "").lower()
+
+    def _factor_debara_pentru_toc_stoc(self, item: dict) -> float:
+        if self._toc_tip_reglabil_stoc(item):
+            return float(self.config_app.debara_toc_reglabil_factor_stoc or 1.5)
+        return float(self.config_app.debara_toc_fix_factor_stoc or 2.0)
+
+    def _toggle_debara_usa(self, idx: int) -> None:
+        if idx < 0 or idx >= len(self.cos_cumparaturi):
+            return
+        item = self.cos_cumparaturi[idx]
+        if not self._is_stoc_usa_pt_debara(item):
+            return
+        if item.get("debara"):
+            baza = float(item.get("pret_eur_fara_debara") or item.get("pret_eur") or 0)
+            item["pret_eur"] = round(baza, 2)
+            item.pop("debara", None)
+            item.pop("pret_eur_fara_debara", None)
+            self.refresh_cos()
+            return
+        if item.get("glisare_activ"):
+            pret_baza = float(item.get("pret_eur_fara_glisare") or item.get("pret_eur") or 0)
+            item["pret_eur"] = round(pret_baza, 2)
+            item["glisare_activ"] = False
+            item["glisare_mod"] = None
+            item.pop("pret_eur_fara_glisare", None)
+            self._cleanup_sistem_glisare_masca()
+        if item.get("dubla") == "usa":
+            self._transforma_in_simpla_core(idx)
+        baza = float(item.get("pret_eur") or 0)
+        fac = float(self.config_app.usa_dubla_factor_stoc or 2.35)
+        item["pret_eur_fara_debara"] = round(baza, 2)
+        item["pret_eur"] = round(baza * fac, 2)
+        item["debara"] = True
+        self.show_success_toast("Optiune DEBARA activata! 👍", "green")
+        self.refresh_cos()
+
+    def _toggle_debara_toc(self, idx: int) -> None:
+        if idx < 0 or idx >= len(self.cos_cumparaturi):
+            return
+        item = self.cos_cumparaturi[idx]
+        if self._get_item_tip(item) != "tocuri" or self._get_furnizor_from_item(item) != "Stoc":
+            return
+        if item.get("dubla"):
+            return
+        if item.get("debara_toc"):
+            baza = float(item.get("pret_eur_fara_debara_toc") or item.get("pret_eur") or 0)
+            item["pret_eur"] = round(baza, 2)
+            item.pop("debara_toc", None)
+            item.pop("pret_eur_fara_debara_toc", None)
+            self.refresh_cos()
+            return
+        baza = float(item.get("pret_eur") or 0)
+        fac = self._factor_debara_pentru_toc_stoc(item)
+        item["pret_eur_fara_debara_toc"] = round(baza, 2)
+        item["pret_eur"] = round(baza * fac, 2)
+        item["debara_toc"] = True
+        self.show_success_toast("Optiune DEBARA activata! 👍", "green")
+        self.refresh_cos()
+
     def transforma_in_dubla(self, idx: int) -> None:
         """
         Transformă o foaie de ușă în ușă dublă sau tocul în toc dublu.
@@ -4838,6 +5237,16 @@ class AplicatieOfertare(ctk.CTk):
         if item.get("dubla"):
             return  # deja marcat ca dublă/dublu
         furnizor = self._get_furnizor_from_item(item)
+        if tip == "usi" and item.get("debara"):
+            bz = float(item.get("pret_eur_fara_debara") or item.get("pret_eur") or 0)
+            item["pret_eur"] = round(bz, 2)
+            item.pop("debara", None)
+            item.pop("pret_eur_fara_debara", None)
+        if tip == "tocuri" and item.get("debara_toc"):
+            bz = float(item.get("pret_eur_fara_debara_toc") or item.get("pret_eur") or 0)
+            item["pret_eur"] = round(bz, 2)
+            item.pop("debara_toc", None)
+            item.pop("pret_eur_fara_debara_toc", None)
         pret = float(item.get("pret_eur") or 0)
         if tip == "usi":
             # UȘĂ → dublă
@@ -4854,10 +5263,6 @@ class AplicatieOfertare(ctk.CTk):
             item["dubla"] = "usa"
             # Dacă nu mai există uși glisante Stoc active, ștergem „Sistem Glisare + Masca”
             self._cleanup_sistem_glisare_masca()
-            # Găsim tocul aferent (același furnizor, cel mai apropiat în listă) și îl facem dublu
-            toc_idx = self._find_toc_pentru_usa(idx, furnizor, cauta_dublu=False)
-            if toc_idx is not None:
-                self._transforma_toc_in_dublu(toc_idx)
         else:
             # TOC → dublu (comportament vechi, manual, păstrat)
             if furnizor == "Stoc":
@@ -4865,11 +5270,10 @@ class AplicatieOfertare(ctk.CTk):
             else:
                 item["pret_eur"] = round(pret * self.config_app.toc_dublu_factor_erkado, 2)
             item["dubla"] = "toc"
-        # Ușă dublă și kit glisare sunt exclusive: la selectarea dublă dispare poziția cu kitul
-        self.cos_cumparaturi = [
-            i for i in self.cos_cumparaturi
-            if (i.get("nume") or "").strip() != "Kit Glisare Simplu Peste Perete"
-        ]
+        if tip == "usi":
+            self.show_success_toast("Usa Dubla activata! 👍", "blue")
+        else:
+            self.show_success_toast("Toc Dublu activat! 👍", "blue")
         self.refresh_cos()
 
     def _has_usa_cu_kit_glisare(self) -> bool:
@@ -4906,83 +5310,13 @@ class AplicatieOfertare(ctk.CTk):
             if (i.get("nume") or "").strip() != "Sistem Glisare + Masca"
         ]
 
-    def _find_toc_pentru_usa(self, idx_usa: int, furnizor: str, cauta_dublu: bool) -> int | None:
-        """
-        Găsește indexul tocului asociat unei uși:
-        - același furnizor (Stoc / Erkado),
-        - tip 'tocuri',
-        - dacă cauta_dublu=True: ia un toc deja marcat dublu; altfel ia unul simplu,
-        - alege tocul cu indexul cel mai apropiat de ușă.
-        """
-        best_idx = None
-        best_dist = None
-        for i, it in enumerate(self.cos_cumparaturi):
-            if self._get_item_tip(it) != "tocuri":
-                continue
-            if self._get_furnizor_from_item(it) != furnizor:
-                continue
-            este_dublu = it.get("dubla") == "toc"
-            if cauta_dublu and not este_dublu:
-                continue
-            if not cauta_dublu and este_dublu:
-                continue
-            dist = abs(i - idx_usa)
-            if best_dist is None or dist < best_dist:
-                best_dist = dist
-                best_idx = i
-        return best_idx
-
-    def _transforma_toc_in_dublu(self, idx_toc: int) -> None:
-        """Transformă un toc simplu în toc dublu și curăță opțiunea de toc tunel."""
-        if idx_toc < 0 or idx_toc >= len(self.cos_cumparaturi):
-            return
-        item = self.cos_cumparaturi[idx_toc]
-        if self._get_item_tip(item) != "tocuri" or item.get("dubla") == "toc":
-            return
-        furnizor = self._get_furnizor_from_item(item)
-        pret = float(item.get("pret_eur") or 0)
-        if furnizor == "Stoc":
-            item["pret_eur"] = round(pret * 2, 2)
-        else:
-            item["pret_eur"] = round(pret * 1.30, 2)
-        item["dubla"] = "toc"
-        # La trecerea pe toc dublu scoatem marcajul de toc tunel
-        item["toc_tunel"] = False
-        nume = item.get("nume") or ""
-        if "Toc Tunel" in nume:
-            item["nume"] = nume.replace("Toc Tunel ", "Toc ", 1)
-
-    def _transforma_toc_in_simplu(self, idx_toc: int) -> None:
-        """Transformă un toc dublu în toc simplu și curăță opțiunea de toc tunel."""
-        if idx_toc < 0 or idx_toc >= len(self.cos_cumparaturi):
-            return
-        item = self.cos_cumparaturi[idx_toc]
-        if self._get_item_tip(item) != "tocuri" or item.get("dubla") != "toc":
-            return
-        furnizor = self._get_furnizor_from_item(item)
-        pret = float(item.get("pret_eur") or 0)
-        if furnizor == "Stoc":
-            item["pret_eur"] = round(pret / 2, 2)
-        else:
-            item["pret_eur"] = round(pret / 1.30, 2)
-        item["dubla"] = None
-        item["toc_tunel"] = False
-        nume = item.get("nume") or ""
-        if "Toc Tunel" in nume:
-            item["nume"] = nume.replace("Toc Tunel ", "Toc ", 1)
-
     def _set_toc_tunel(self, idx: int, activ: bool) -> None:
-        """Activează/dezactivează opțiunea Toc Tunel pentru un toc:
-        - Stoc: +11 € la preț;
-        - Erkado: doar marcaj vizual, prețul rămâne neschimbat.
-        """
+        """Toc tunel: strict vizual (marcaj + denumire); fără modificare preț."""
         if idx < 0 or idx >= len(self.cos_cumparaturi):
             return
         item = self.cos_cumparaturi[idx]
         if self._get_item_tip(item) != "tocuri":
             return
-        furnizor = self._get_furnizor_from_item(item)
-        # Nu permitem Toc Tunel dacă nu există ușă cu kit glisare activ
         if not self._has_usa_cu_kit_glisare():
             self.afiseaza_mesaj(
                 "Atenție",
@@ -4990,41 +5324,31 @@ class AplicatieOfertare(ctk.CTk):
                 "#7a1a1a",
             )
             return
-        pret_baza = float(item.get("pret_eur_fara_tunel") or item.get("pret_eur") or 0)
-        item["pret_eur_fara_tunel"] = pret_baza
         if activ:
             item["toc_tunel"] = True
-            # Stoc: +11 €, Erkado: fără modificare de preț
-            if furnizor == "Stoc":
-                item["pret_eur"] = round(pret_baza + 11.0, 2)
-            else:
-                item["pret_eur"] = pret_baza
             if "Toc Tunel" not in (item.get("nume") or ""):
                 item["nume"] = (item.get("nume") or "").replace("Toc ", "Toc Tunel ", 1)
+            self.show_success_toast("Toc tunel activat! 👍", "yellow")
         else:
             item["toc_tunel"] = False
-            # La dezactivare revenim la prețul de bază pentru ambele furnizori
-            item["pret_eur"] = pret_baza
+            item.pop("pret_eur_fara_tunel", None)
             nume = item.get("nume") or ""
             if "Toc Tunel" in nume:
                 item["nume"] = nume.replace("Toc Tunel ", "Toc ", 1)
         self.refresh_cos()
 
-    def transforma_in_simpla(self, idx: int) -> None:
-        """
-        Revine la ușă simplă sau toc simplu (inversează formulele dublă/dublu).
-        """
+    def _transforma_in_simpla_core(self, idx: int) -> bool:
+        """Logica ușă/toc simplu fără refresh; returnează True dacă s-a modificat."""
         if idx < 0 or idx >= len(self.cos_cumparaturi):
-            return
+            return False
         item = self.cos_cumparaturi[idx]
         tip = item.get("tip")
         dubla = item.get("dubla")
         if tip not in ("usi", "tocuri") or dubla not in ("usa", "toc"):
-            return
+            return False
         furnizor = self._get_furnizor_from_item(item)
         pret = float(item.get("pret_eur") or 0)
         if dubla == "usa":
-            # UȘĂ dublă → simplă (inversăm aproximativ formula din transforma_in_dubla)
             if furnizor == "Stoc":
                 factor = self.config_app.usa_dubla_factor_stoc or 1.0
                 item["pret_eur"] = round(pret / factor, 2)
@@ -5032,17 +5356,10 @@ class AplicatieOfertare(ctk.CTk):
                 factor = self.config_app.usa_dubla_factor_erkado or 1.0
                 plus_fix = self.config_app.usa_dubla_plus_erkado
                 item["pret_eur"] = round((pret - plus_fix) / factor, 2)
-            # La revenirea la simplă, păstrăm ușa ca „normală” (fără glisare) până când este ales din nou kitul
             item["glisare_activ"] = False
             item["glisare_mod"] = None
-            # Dacă nu mai există uși glisante Stoc active, ștergem „Sistem Glisare + Masca”
             self._cleanup_sistem_glisare_masca()
-            # Găsim tocul aferent și îl facem simplu (inclusiv scoatem dublu/tunel)
-            toc_idx = self._find_toc_pentru_usa(idx, furnizor, cauta_dublu=True)
-            if toc_idx is not None:
-                self._transforma_toc_in_simplu(toc_idx)
         else:
-            # TOC dublu → simplu (inversează formulele pentru toc dublu)
             if furnizor == "Stoc":
                 factor = self.config_app.toc_dublu_factor_stoc or 1.0
                 item["pret_eur"] = round(pret / factor, 2)
@@ -5050,13 +5367,19 @@ class AplicatieOfertare(ctk.CTk):
                 factor = self.config_app.toc_dublu_factor_erkado or 1.0
                 item["pret_eur"] = round(pret / factor, 2)
         del item["dubla"]
-        self.refresh_cos()
+        return True
+
+    def transforma_in_simpla(self, idx: int) -> None:
+        """
+        Revine la ușă simplă sau toc simplu (inversează formulele dublă/dublu).
+        """
+        if self._transforma_in_simpla_core(idx):
+            self.refresh_cos()
 
     def _on_kit_glisare_simplu(self, idx: int) -> None:
         """La click pe Kit Glisare Simplu:
         - pentru ușile Stoc: opțiunile „Cu închidere” / „Fără închidere” și poziția suplimentară Sistem Glisare + Masca;
-        - pentru ușile Erkado: comportamentul rămâne cel vechi (doar kitul, fără modificarea prețului ușii);
-        - în ambele cazuri NU se permite dacă există ușă/toc dublu.
+        - pentru ușile Erkado: comportamentul rămâne cel vechi (doar kitul, fără modificarea prețului ușii).
         """
         if idx < 0 or idx >= len(self.cos_cumparaturi):
             return
@@ -5068,14 +5391,11 @@ class AplicatieOfertare(ctk.CTk):
         nume_sistem = "Sistem Glisare + Masca"
         furnizor = self._get_furnizor_from_item(item)
 
-        if any(i.get("dubla") for i in self.cos_cumparaturi):
-            self.afiseaza_mesaj(
-                "Atenție",
-                "Nu puteți adăuga Kit Glisare Simplu dacă aveți ușă dublă sau toc dublu. "
-                "Selectați întâi „Simplă”/„Simplu” pentru toate ușile și tocurile.",
-                "#7a1a1a",
-            )
-            return
+        self._strip_usa_debara_state(idx)
+        item = self.cos_cumparaturi[idx]
+        if item.get("dubla") == "usa":
+            self._transforma_in_simpla_core(idx)
+            item = self.cos_cumparaturi[idx]
 
         # Comportament nou – DOAR pentru ușile de Stoc
         if furnizor == "Stoc":
@@ -5115,7 +5435,7 @@ class AplicatieOfertare(ctk.CTk):
                 "qty": 1,
                 "tip": "servicii_suplimentare",
             })
-
+        self.show_success_toast("Usa Glisanta activata! 👍", "yellow")
         self.refresh_cos()
 
     def _set_glisare_mod(self, idx: int, mod: str) -> None:
@@ -5139,6 +5459,7 @@ class AplicatieOfertare(ctk.CTk):
                 2,
             )
             item["glisare_mod"] = "fara"
+        self.show_success_toast("Usa Glisanta activata! 👍", "yellow")
         self.refresh_cos()
 
     def _has_erkado_usi(self) -> bool:
@@ -5329,6 +5650,112 @@ class AplicatieOfertare(ctk.CTk):
             item["pret_eur"] = 154.0
         self.refresh_cos()
 
+    def _decor_din_paranteza_ultima(self, nume: str) -> str:
+        if "(" in nume and ")" in nume:
+            return nume.rsplit("(", 1)[1].rsplit(")", 1)[0].strip()
+        return ""
+
+    def _infer_maner_broasca_tip_cos_item(self, item: dict) -> str | None:
+        """'wc' | 'cilindru' dacă mânerul cere broască potrivită; altfel None."""
+        raw = (item.get("maner_broasca_tip") or "").strip().lower()
+        if raw in ("wc", "cilindru"):
+            return raw
+        if item.get("tip") == "manere":
+            return _maner_broasca_tip_decor_text(item.get("nume") or "")
+        if item.get("tip") == "manere_engs":
+            raw = (item.get("nume") or "").strip()
+            mm = re.match(r"^Maner\s*\(\s*(.+)\s*\)\s*$", raw, re.IGNORECASE | re.DOTALL)
+            if mm:
+                toks = mm.group(1).strip().split()
+                return _maner_broasca_tip_engs_inc(toks[-1]) if toks else None
+            if raw.upper().startswith("MANER "):
+                toks = raw.split()
+                return _maner_broasca_tip_engs_inc(toks[-1]) if len(toks) >= 2 else None
+            toks = raw.split()
+            return _maner_broasca_tip_engs_inc(toks[-1]) if toks else None
+        if item.get("tip") == "accesorii":
+            nume = (item.get("nume") or "").strip()
+            if nume.startswith("[") and "]" in nume:
+                t = _maner_broasca_tip_decor_text(nume)
+                if t:
+                    return t
+                dec = self._decor_din_paranteza_ultima(nume)
+                return _maner_broasca_tip_decor_text(dec)
+        return None
+
+    def _cos_append_maner_cu_broasca_optional(self, maner_entry: dict, tip_b: str | None) -> None:
+        """Adaugă mânerul în coș; dacă tip_b e setat, adaugă și broasca la 6 € + toast."""
+        if not tip_b:
+            self.cos_cumparaturi.append(maner_entry)
+            self.refresh_cos()
+            return
+        pk = uuid.uuid4().hex[:12]
+        maner_entry["broasca_pair_key"] = pk
+        maner_entry["maner_broasca_tip"] = tip_b
+        self.cos_cumparaturi.append(maner_entry)
+        nume_b = BROASCA_WC_NUME if tip_b == "wc" else BROASCA_CILINDRU_NUME
+        self.cos_cumparaturi.append({
+            "nume": nume_b,
+            "pret_eur": BROASCA_MANER_PRET_EUR,
+            "qty": 1,
+            "tip": "servicii_suplimentare",
+            "fara_discount": True,
+            "broasca_pair_key": pk,
+            "broasca_auto": True,
+        })
+        et = "WC" if tip_b == "wc" else "Cilindru"
+        self.show_success_toast(
+            f"Broasca {et} a fost adaugata automat! 🔐",
+            "broasca_wc" if tip_b == "wc" else "broasca_cil",
+            duration_ms=2800,
+        )
+        self.refresh_cos()
+
+    def _validare_broasca_manere(self) -> tuple[bool, str]:
+        need_wc = 0
+        need_cil = 0
+        for it in self.cos_cumparaturi:
+            bt = self._infer_maner_broasca_tip_cos_item(it)
+            if not bt:
+                continue
+            q = int(it.get("qty") or 1)
+            if bt == "wc":
+                need_wc += q
+            else:
+                need_cil += q
+        have_wc = sum(
+            int(i.get("qty") or 1)
+            for i in self.cos_cumparaturi
+            if (i.get("nume") or "").strip() == BROASCA_WC_NUME
+        )
+        have_cil = sum(
+            int(i.get("qty") or 1)
+            for i in self.cos_cumparaturi
+            if (i.get("nume") or "").strip() == BROASCA_CILINDRU_NUME
+        )
+        if need_wc <= have_wc and need_cil <= have_cil:
+            return (True, "")
+        return (False, "broasca")
+
+    def _remove_cos_item(self, idx: int) -> None:
+        """Șterge poziția din coș; pentru mâner cu broască auto, elimină și broasca cuplată."""
+        if idx < 0 or idx >= len(self.cos_cumparaturi):
+            return
+        item = self.cos_cumparaturi[idx]
+        key = item.get("broasca_pair_key")
+        tip_m = item.get("maner_broasca_tip")
+        is_engs = item.get("tip") == "manere_engs"
+        strip_broasca = bool(key and (tip_m or is_engs) and not item.get("broasca_auto"))
+        new_list: list[dict] = []
+        for i, it in enumerate(self.cos_cumparaturi):
+            if i == idx:
+                continue
+            if strip_broasca and it.get("broasca_pair_key") == key and it.get("broasca_auto"):
+                continue
+            new_list.append(it)
+        self.cos_cumparaturi = new_list
+        self.refresh_cos()
+
     def _validare_oferta_usi_tocuri(self) -> tuple[bool, str]:
         """
         Verifică dacă oferta e validă pentru închidere/salvare.
@@ -5404,27 +5831,6 @@ class AplicatieOfertare(ctk.CTk):
                         f"Nu puteți închide/salva oferta: finisajul tocului Erkado nu se potrivește cu ușa corespunzătoare. "
                         f"Indice pereche {idx + 1}: așteptat '{expected_toc_finisaj}', găsit '{actual_toc_finisaj}'.",
                     )
-
-        # Nu permite ușă dublă cu toc simplu sau ușă simplă cu toc dublu
-        if total_usi > 0 and total_tocuri > 0:
-            has_usa_dubla = any(
-                self._get_item_tip(i) == "usi" and i.get("dubla") == "usa" for i in self.cos_cumparaturi
-            )
-            has_usa_simpla = any(
-                self._get_item_tip(i) == "usi" and not i.get("dubla") for i in self.cos_cumparaturi
-            )
-            has_toc_dublu = any(
-                self._get_item_tip(i) == "tocuri" and i.get("dubla") == "toc" for i in self.cos_cumparaturi
-            )
-            has_toc_simplu = any(
-                self._get_item_tip(i) == "tocuri" and not i.get("dubla") for i in self.cos_cumparaturi
-            )
-            if (has_usa_dubla and has_toc_simplu) or (has_usa_simpla and has_toc_dublu):
-                return (
-                    False,
-                    "Nu puteți închide oferta: există ușă dublă cu toc simplu sau ușă simplă cu toc dublu. "
-                    "Toate perechile ușă–toc trebuie să fie fie amândouă simple, fie amândouă duble.",
-                )
 
         # Dacă există ușă cu kit glisare activ, trebuie să existe cel puțin un toc tunel Stoc
         if self._has_usa_cu_kit_glisare():
@@ -5593,8 +5999,56 @@ class AplicatieOfertare(ctk.CTk):
         if titlu == "Manere":
             var_manere = w.get("furnizor_manere")
             furnizor = var_manere.get() if var_manere else "Stoc"
+            if furnizor != "Enger":
+                phm = w.get("_ph_model") or "Alege Model"
+                phd = w.get("_ph_decor") or "Alege Decor"
+                if (w["model"].get() or "").strip() == phm.strip():
+                    self.afiseaza_mesaj(
+                        "Atenție",
+                        "Selectează modelul mânerului (nu «Alege Model»).",
+                        "#7a1a1a",
+                    )
+                    return
+                if (w["decor"].get() or "").strip() == phd.strip():
+                    self.afiseaza_mesaj(
+                        "Atenție",
+                        "Selectează finisajul / decorul mânerului.",
+                        "#7a1a1a",
+                    )
+                    return
+                if float(w.get("pret_val") or 0) <= 0:
+                    self.afiseaza_mesaj(
+                        "Atenție",
+                        "Prețul mânerului nu este determinat. Verifică colecția, modelul și decorul.",
+                        "#7a1a1a",
+                    )
+                    return
+        if titlu == "Manere":
+            c = (w["colectie"].get() or "").strip()
+            m = (w["model"].get() or "").strip()
+            dd = (dec_display or "").strip()
+            segments = " ".join(x for x in (c, m) if x).strip()
+            if segments and dd:
+                inner = f"{segments} ({dd})"
+            elif segments:
+                inner = segments
+            else:
+                inner = dd or "—"
+            nume = f"Maner ({inner})"
+            entry = {
+                "nume": nume,
+                "pret_eur": w["pret_val"],
+                "qty": 1,
+                "tip": "manere",
+                "furnizor": furnizor,
+            }
+            tip_b = _maner_broasca_tip_stoc_manere_fields(c, m, dd)
+            self._cos_append_maner_cu_broasca_optional(entry, tip_b)
+            return
+
         nume = f"[{furnizor}] {w['colectie'].get()} {w['model'].get()} ({dec_display})"
-        self.cos_cumparaturi.append({"nume": nume, "pret_eur": w["pret_val"], "qty": 1, "tip": tip})
+        entry = {"nume": nume, "pret_eur": w["pret_val"], "qty": 1, "tip": tip}
+        self.cos_cumparaturi.append(entry)
         self.refresh_cos()
 
     def adauga_parchet_in_cos(self, titlu):
@@ -5749,10 +6203,8 @@ class AplicatieOfertare(ctk.CTk):
             else:
                 total_eur_cu_discount += val
             is_dubla = item.get("dubla") in ("usa", "toc")
-            f_main = ctk.CTkFrame(
-                self.scroll_cos,
-                fg_color="#1e3a5f" if is_dubla else "#2D2D2D",
-            )
+            row_accent = self._cos_row_accent_for_item(item)
+            f_main = ctk.CTkFrame(self.scroll_cos, **self._cos_row_frame_kwargs(row_accent))
             f_main.pack(fill="x", pady=5, padx=2)
             f_controls = ctk.CTkFrame(f_main, fg_color="transparent")
             f_controls.pack(fill="x", padx=8, pady=(8, 6))
@@ -5804,6 +6256,10 @@ class AplicatieOfertare(ctk.CTk):
                 # Buton transformare: simplu ↔ dublă/dublu + Kit Glisare Simplu / Toc Tunel
                 tip_item = item.get("tip")
                 if tip_item in ("usi", "tocuri"):
+                    btn_neutral = "#2563eb"
+                    btn_green_on = "#2E7D32"
+                    btn_blue_on = "#3b82f6"
+                    btn_yellow_on = "#ca8a04"
                     if item.get("dubla"):
                         btn_text = "Simplă" if tip_item == "usi" else "Simplu"
                         ctk.CTkButton(
@@ -5811,7 +6267,7 @@ class AplicatieOfertare(ctk.CTk):
                             text=btn_text,
                             width=70,
                             height=25,
-                            fg_color="#2563eb",
+                            fg_color=btn_blue_on,
                             command=lambda idx=i: self.transforma_in_simpla(idx),
                         ).pack(side="left", padx=4)
                     else:
@@ -5821,20 +6277,28 @@ class AplicatieOfertare(ctk.CTk):
                             text=btn_dubla_text,
                             width=70,
                             height=25,
-                            fg_color="#2563eb",
+                            fg_color=btn_neutral,
                             command=lambda idx=i: self.transforma_in_dubla(idx),
                         ).pack(side="left", padx=4)
                     if tip_item == "usi":
-                        # Buton „Kit Glisare Simplu” – pentru uși (Stoc + Erkado)
+                        if self._is_stoc_usa_pt_debara(item):
+                            debara_on = bool(item.get("debara"))
+                            ctk.CTkButton(
+                                f_controls,
+                                text="DEBARA",
+                                width=88,
+                                height=25,
+                                fg_color=btn_green_on if debara_on else btn_neutral,
+                                command=lambda idx=i: self._toggle_debara_usa(idx),
+                            ).pack(side="left", padx=4)
                         ctk.CTkButton(
                             f_controls,
                             text="Kit Glisare Simplu",
                             width=120,
                             height=25,
-                            fg_color="#2563eb",
+                            fg_color=btn_yellow_on if item.get("glisare_activ") else btn_neutral,
                             command=lambda idx=i: self._on_kit_glisare_simplu(idx),
                         ).pack(side="left", padx=4)
-                        # Dacă glisarea este activă pe această ușă, afișăm și opțiunile Cu/Fără închidere
                         if item.get("glisare_activ"):
                             mod_glis = item.get("glisare_mod") or "fara"
                             ctk.CTkButton(
@@ -5842,7 +6306,7 @@ class AplicatieOfertare(ctk.CTk):
                                 text="Fără închidere",
                                 width=120,
                                 height=25,
-                                fg_color="#2563eb" if mod_glis == "fara" else "#2E7D32",
+                                fg_color=btn_yellow_on if mod_glis == "fara" else btn_neutral,
                                 command=lambda idx=i: self._set_glisare_mod(idx, "fara"),
                             ).pack(side="left", padx=4)
                             ctk.CTkButton(
@@ -5850,11 +6314,10 @@ class AplicatieOfertare(ctk.CTk):
                                 text="Cu închidere",
                                 width=120,
                                 height=25,
-                                fg_color="#2563eb" if mod_glis == "cu" else "#2E7D32",
+                                fg_color=btn_yellow_on if mod_glis == "cu" else btn_neutral,
                                 command=lambda idx=i: self._set_glisare_mod(idx, "cu"),
                             ).pack(side="left", padx=4)
                     elif tip_item == "tocuri":
-                        # Buton „Toc Tunel” – pentru tocurile Stoc și Erkado, când există ușă cu kit glisare
                         furnizor_toc = self._get_furnizor_from_item(item)
                         if self._has_usa_cu_kit_glisare():
                             este_tunel = bool(item.get("toc_tunel"))
@@ -5863,8 +6326,18 @@ class AplicatieOfertare(ctk.CTk):
                                 text="Toc tunel",
                                 width=100,
                                 height=25,
-                                fg_color="#2563eb" if este_tunel else "#2E7D32",
+                                fg_color=btn_yellow_on if este_tunel else btn_neutral,
                                 command=lambda idx=i, activ=not este_tunel: self._set_toc_tunel(idx, activ),
+                            ).pack(side="left", padx=4)
+                        if furnizor_toc == "Stoc" and not item.get("dubla"):
+                            dt_on = bool(item.get("debara_toc"))
+                            ctk.CTkButton(
+                                f_controls,
+                                text="DEBARA",
+                                width=88,
+                                height=25,
+                                fg_color=btn_green_on if dt_on else btn_neutral,
+                                command=lambda idx=i: self._toggle_debara_toc(idx),
                             ).pack(side="left", padx=4)
                 # Pe rândul suplimentar "Kit Glisare Simplu Peste Perete" afișăm SP1NZ/SP1Z (Erkado/nu) și SP1B
                 if not readonly and (item.get("nume") or "").strip() == "Kit Glisare Simplu Peste Perete":
@@ -5873,12 +6346,14 @@ class AplicatieOfertare(ctk.CTk):
                     opt_sp1z = "SP1NZ" if has_erkado_usi else "SP1Z"
                     selected_sp1z = item.get("kit_glisare_option") == opt_sp1z
                     selected_sp1b = item.get("kit_glisare_option") == "SP1B"
+                    btn_yellow_kit = "#ca8a04"
+                    btn_kit_off = "#3A3A3A"
                     ctk.CTkButton(
                         f_controls,
                         text=sp1z_label,
                         width=220,
                         height=25,
-                        fg_color="#1e5c3a" if selected_sp1z else "#2E7D32",
+                        fg_color=btn_yellow_kit if selected_sp1z else btn_kit_off,
                         command=lambda idx=i: self._on_sp1z(idx),
                     ).pack(side="left", padx=4)
                     ctk.CTkButton(
@@ -5886,7 +6361,7 @@ class AplicatieOfertare(ctk.CTk):
                         text="SP1B (fara frezare)",
                         width=140,
                         height=25,
-                        fg_color="#1e5c3a" if selected_sp1b else "#2E7D32",
+                        fg_color=btn_yellow_kit if selected_sp1b else btn_kit_off,
                         command=lambda idx=i: self._on_sp1b(idx),
                     ).pack(side="left", padx=4)
                 # Buton ștergere (dreapta sus)
@@ -5896,7 +6371,7 @@ class AplicatieOfertare(ctk.CTk):
                     width=25,
                     height=25,
                     fg_color="#7a1a1a",
-                    command=lambda idx=i: (self.cos_cumparaturi.pop(idx), self.refresh_cos()),
+                    command=lambda idx=i: self._remove_cos_item(idx),
                 ).pack(side="right", padx=4)
                 # Etichetă preț pe linie în dreapta (LEI cu TVA)
                 ctk.CTkLabel(
@@ -5909,9 +6384,12 @@ class AplicatieOfertare(ctk.CTk):
                 ctk.CTkLabel(f_controls, text=f"Cantitate: {item['qty']} buc", font=("Segoe UI", 12)).pack(
                     side="left", padx=5
                 )
-            text_color = "#93c5fd" if is_dubla else None
+            text_color = self._cos_row_title_text_color(row_accent)
+            if text_color is None and is_dubla:
+                text_color = "#93c5fd"
             extra_nume = (item.get("nume_adaugire_pdf") or "").strip()
             nume_afis = item["nume"] if not extra_nume else f"{item['nume']} {extra_nume}"
+            nume_afis = format_nume_maner_afisare(item, nume_afis)
             nume_afis = apply_majuscule_line_stoc_erkado(item, nume_afis)
             ctk.CTkLabel(
                 f_main,
@@ -5923,13 +6401,62 @@ class AplicatieOfertare(ctk.CTk):
                 text_color=text_color,
             ).pack(fill="x", padx=10, pady=(2, 2))
             if is_dubla:
-                eticheta_dubla = "Ușă dublă" if item.get("dubla") == "usa" else "Toc dublu"
+                eticheta_dubla = "Usa dubla" if item.get("dubla") == "usa" else "Toc dublu"
                 eticheta_dubla = apply_majuscule_line_stoc_erkado(item, eticheta_dubla)
                 ctk.CTkLabel(
                     f_main,
                     text=eticheta_dubla,
                     font=("Segoe UI", 11),
                     text_color="#93c5fd",
+                    anchor="w",
+                ).pack(fill="x", padx=10, pady=(0, 4))
+            if item.get("debara"):
+                ctk.CTkLabel(
+                    f_main,
+                    text="Usa DEBARA",
+                    font=("Segoe UI", 11),
+                    text_color="#86efac",
+                    anchor="w",
+                ).pack(fill="x", padx=10, pady=(0, 4))
+            if item.get("debara_toc"):
+                ctk.CTkLabel(
+                    f_main,
+                    text="Toc DEBARA",
+                    font=("Segoe UI", 11),
+                    text_color="#86efac",
+                    anchor="w",
+                ).pack(fill="x", padx=10, pady=(0, 4))
+            if item.get("tip") == "usi" and item.get("glisare_activ"):
+                ctk.CTkLabel(
+                    f_main,
+                    text="Usa glisanta",
+                    font=("Segoe UI", 11),
+                    text_color="#fde047",
+                    anchor="w",
+                ).pack(fill="x", padx=10, pady=(0, 4))
+            if item.get("tip") == "tocuri" and item.get("toc_tunel"):
+                ctk.CTkLabel(
+                    f_main,
+                    text="Toc tunel (marcaj vizual)",
+                    font=("Segoe UI", 11),
+                    text_color="#fde047",
+                    anchor="w",
+                ).pack(fill="x", padx=10, pady=(0, 4))
+            nume_kit_row = (item.get("nume") or "").strip()
+            if nume_kit_row == "Sistem Glisare + Masca":
+                ctk.CTkLabel(
+                    f_main,
+                    text="Kit glisare + masca",
+                    font=("Segoe UI", 11),
+                    text_color="#fde047",
+                    anchor="w",
+                ).pack(fill="x", padx=10, pady=(0, 4))
+            elif nume_kit_row == "Kit Glisare Simplu Peste Perete":
+                ctk.CTkLabel(
+                    f_main,
+                    text="Kit glisare simplu peste perete",
+                    font=("Segoe UI", 11),
+                    text_color="#fde047",
                     anchor="w",
                 ).pack(fill="x", padx=10, pady=(0, 4))
             if item.get("tip") == "parchet" and "suprafata_mp" in item:
@@ -6043,7 +6570,7 @@ class AplicatieOfertare(ctk.CTk):
             ).pack(side="right", padx=6)
             ctk.CTkLabel(
                 f_row,
-                text=(item.get("nume") or ""),
+                text=format_nume_maner_afisare(item, item.get("nume") or ""),
                 font=("Segoe UI", 12),
                 anchor="w",
                 wraplength=700,
@@ -6116,8 +6643,7 @@ class AplicatieOfertare(ctk.CTk):
         item = self.cos_cumparaturi[idx]
         qty_after = item["qty"] + delta
         if qty_after <= 0:
-            self.cos_cumparaturi.pop(idx)
-            self.refresh_cos()
+            self._remove_cos_item(idx)
             return
         self.cos_cumparaturi[idx]["qty"] += delta
         self.refresh_cos()
@@ -6912,6 +7438,14 @@ class AplicatieOfertare(ctk.CTk):
         return result[0]
 
     def salveaza_oferta_finala(self, *, replace_offer_id: int | None = None, force_new_offer: bool = False, show_costs_dialog: bool = False):
+        ok_br, _ = self._validare_broasca_manere()
+        if not ok_br:
+            self.show_success_toast(
+                "Atentie! Lipseste Broasca WC/Cilindru pentru manerul selectat! ⚠️",
+                "warning",
+                duration_ms=4000,
+            )
+            return
         ok, mesaj = self._validare_oferta_usi_tocuri()
         if not ok:
             self.afiseaza_mesaj("Oferta nu poate fi salvată", mesaj, "#7a1a1a")

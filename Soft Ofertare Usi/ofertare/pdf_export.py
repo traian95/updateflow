@@ -14,6 +14,8 @@ _SERVICII_FARA_DISCOUNT = frozenset({
     "scurtare set usa +toc",
     "redimensionare k",
     "redimensionare sus-jos",
+    "broasca wc",
+    "broasca cilindru",
 })
 
 
@@ -60,6 +62,18 @@ def apply_majuscule_line_stoc_erkado(item: dict[str, Any], line: str) -> str:
     if _item_majuscule_stoc_erkado_usi_toc(item):
         return line.upper()
     return line
+
+
+def format_nume_maner_afisare(item: dict[str, Any], nume: str) -> str:
+    """Coș / PDF: «Maner (denumire)» — fără [Stoc]/[Erkado]; Enger din «MANER …»."""
+    raw = (nume or "").strip()
+    if not raw:
+        return raw
+    tip = (item.get("tip") or "").strip()
+    if tip == "manere_engs" and raw.upper().startswith("MANER "):
+        inner = raw[6:].strip()
+        return f"Maner ({inner})" if inner else "Maner"
+    return raw
 
 
 def _pdf_safe_text(s) -> str:
@@ -269,7 +283,7 @@ def build_oferta_pret_pdf(
             pret_total_rand_ron = pret_unitar_ron * qty
         # În coloana din mijloc afișăm numărul de articole (bucăți).
         buc_afis = str(qty)
-        nume_afis = item.get("nume") or ""
+        nume_afis = format_nume_maner_afisare(item, item.get("nume") or "")
         extra_nume = (item.get("nume_adaugire_pdf") or "").strip()
         if aplica_adaugiri_denumire and extra_nume:
             nume_afis = f"{nume_afis} {extra_nume}"
@@ -277,6 +291,10 @@ def build_oferta_pret_pdf(
             nume_afis = nume_afis + " (Usa dubla)"
         elif item.get("dubla") == "toc":
             nume_afis = nume_afis + " (Toc dublu)"
+        if item.get("debara"):
+            nume_afis = nume_afis + " (DEBARA)"
+        if item.get("debara_toc"):
+            nume_afis = nume_afis + " (Toc DEBARA)"
         nume_afis = apply_majuscule_line_stoc_erkado(item, nume_afis)
         nume_safe = _pdf_safe_text(" " + nume_afis)
         wrapped = _wrap_text_to_width(nume_safe, w_prod - 4)
@@ -479,7 +497,7 @@ def genereaza_pdf_oferta(
     for item in cos_cumparaturi:
         pret_eur = item.get("pret_eur", 0) or 0
         qty = item.get("qty", 1) or 1
-        nume = item.get("nume", "")
+        nume = format_nume_maner_afisare(item, item.get("nume", ""))
         extra_nume = (item.get("nume_adaugire_pdf") or "").strip()
         if aplica_adaugiri_denumire and extra_nume:
             nume = f"{nume} {extra_nume}"
@@ -487,6 +505,10 @@ def genereaza_pdf_oferta(
             nume = nume + " (Usa dubla)"
         elif item.get("dubla") == "toc":
             nume = nume + " (Toc dublu)"
+        if item.get("debara"):
+            nume = nume + " (DEBARA)"
+        if item.get("debara_toc"):
+            nume = nume + " (Toc DEBARA)"
         if item.get("tip") == "manere_engs":
             pl = float(item.get("pret_lei_cu_tva") or 0)
             if _is_item_fara_discount(item):

@@ -178,6 +178,10 @@ class AppConfig:
     glisare_plus_stoc: float = 26.0
     glisare_plus_cu_inchidere: float = 47.0
 
+    # Debară – doar uși/tocuri Stoc (factor ușă = același cu ușa dublă Stoc: usa_dubla_factor_stoc).
+    debara_toc_reglabil_factor_stoc: float = 1.5
+    debara_toc_fix_factor_stoc: float = 2.0
+
     def __init__(self) -> None:
         """Încarcă eventuale suprascrieri din fișierul JSON de setări."""
         settings_path = get_settings_path()
