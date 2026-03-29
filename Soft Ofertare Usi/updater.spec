@@ -1,13 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
-# Standalone external updater (root updater.py -> updater.exe).
-# Used by ofertare.exe after download; no Python install required on the client.
+# Build separat: doar updater.exe (onefile), pentru scripturi vechi (ex. scripts\build_release.bat).
+# Fluxul NaturenFlow folosește NaturenFlow.spec (onedir cu NaturenFlow.exe + updater.exe).
 
 a = Analysis(
-    ['updater.py'],
+    ["updater.py"],
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    hiddenimports=["tkinter", "_tkinter"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -23,7 +23,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='updater',
+    name="updater",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -31,6 +31,7 @@ exe = EXE(
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
+    uac_admin=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

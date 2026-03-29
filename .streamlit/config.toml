@@ -1,7 +1,0 @@
-# Tema întunecată nativă — reduce flicker-ul alb înainte de injectarea CSS din app.
-[theme]
-base = "dark"
-primaryColor = "#43a047"
-backgroundColor = "#1e1e1e"
-secondaryBackgroundColor = "#2d2d2d"
-textColor = "#eceff1"

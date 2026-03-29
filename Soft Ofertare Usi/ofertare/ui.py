@@ -72,7 +72,7 @@ from .db import (
     update_offer_full,
     delete_offer,
 )
-from .paths import resolve_asset_path
+from .paths import get_project_dir, get_resource_path
 from .pdf_export import (
     apply_majuscule_line_stoc_erkado,
     build_oferta_pret_pdf,
@@ -84,6 +84,19 @@ from .services import fetch_bnr_eur_rate
 from .updater import check_for_updates, get_local_version, install_zip_update
 
 logger = logging.getLogger(__name__)
+
+
+def _image_resource_path(filename: str) -> str:
+    """Cale imagine: toate variantele trec prin get_resource_path (onedir lângă exe)."""
+    rel = filename.replace("/", os.sep).strip(os.sep)
+    candidates = [os.path.join("assets", rel)]
+    if os.sep not in rel:
+        candidates.append(os.path.join("assets", "images", rel))
+    for c in candidates:
+        p = get_resource_path(c)
+        if os.path.isfile(p):
+            return p
+    return get_resource_path(candidates[0])
 
 
 def _desktop_dir_candidates() -> list[str]:
@@ -534,6 +547,158 @@ def _apply_fullscreen_workspace(win: ctk.CTk | ctk.CTkToplevel) -> None:
             pass
 
 
+class _InteractiveProfileChip(ctk.CTkFrame):
+    """
+    Pill verde compact (avatar cerc + nume); la hover se lărgește lin (~200 ms) și săgeata de log-out
+    alunecă în câmpul vizibil. Click pe săgeată → on_logout. Click pe nume → fără acțiune.
+    """
+
+    # Același verde principal ca butoanele din header (#2E7D32); cerc ușor mai închis pentru contrast.
+    _BG = "#2E7D32"
+    _AVATAR_BG = "#1f5a3d"
+    _EXTRA_LOGOUT = 36
+    _H = 36
+    _ANIM_MS = 200
+    _STEPS = 10
+
+    def __init__(self, master: Any, display_name: str, on_logout: Any, **kwargs: Any) -> None:
+        super().__init__(master, fg_color=self._BG, corner_radius=self._H // 2, border_width=0, **kwargs)
+        self._on_logout = on_logout
+        self._display_name = (display_name or "—").strip() or "—"
+        self._leave_job: str | None = None
+        self._anim_seq = 0
+        self._current_extra = 0.0
+
+        self._inner = ctk.CTkFrame(self, fg_color="transparent")
+        self._inner.pack(fill="both", expand=True, padx=6, pady=0)
+
+        left_g = ctk.CTkFrame(self._inner, fg_color="transparent")
+        left_g.pack(side="left", fill="y")
+
+        self._av = ctk.CTkFrame(left_g, width=24, height=24, corner_radius=12, fg_color=self._AVATAR_BG)
+        self._av.pack(side="left", padx=(0, 6), pady=6)
+        self._av.pack_propagate(False)
+        initial = (self._display_name[0] if self._display_name else "?").upper()
+        ctk.CTkLabel(
+            self._av,
+            text=initial,
+            font=("Segoe UI", 10, "bold"),
+            text_color="#eafaf6",
+        ).place(relx=0.5, rely=0.5, anchor="center")
+
+        self._name_lbl = ctk.CTkLabel(
+            left_g,
+            text=self._display_name,
+            font=("Segoe UI", 11, "bold"),
+            text_color="#f5fffb",
+            cursor="hand2",
+        )
+        self._name_lbl.pack(side="left", pady=6)
+
+        self._logout_holder = ctk.CTkFrame(self._inner, fg_color="transparent", width=0, height=self._H - 8)
+        self._logout_holder.pack(side="right", padx=(2, 4), pady=4)
+        self._logout_holder.pack_propagate(False)
+
+        self._logout_lbl = ctk.CTkLabel(
+            self._logout_holder,
+            text="→",
+            font=("Segoe UI", 15),
+            text_color="#c8f5e8",
+            cursor="hand2",
+        )
+
+        self._logout_lbl.bind("<Button-1>", self._click_logout)
+        self._name_lbl.bind("<Button-1>", lambda _e: None)
+
+        for w in (self, self._inner, left_g, self._av, self._name_lbl, self._logout_holder, self._logout_lbl):
+            w.bind("<Enter>", self._on_enter, add="+")
+            w.bind("<Leave>", self._on_leave, add="+")
+
+        self.update_idletasks()
+        self._base_w = max(104, self.winfo_reqwidth())
+        self.pack_propagate(False)
+        self._apply_extra(0.0)
+
+    def _apply_extra(self, extra: float) -> None:
+        ex = max(0.0, min(float(extra), float(self._EXTRA_LOGOUT)))
+        self._current_extra = ex
+        iw = int(round(ex))
+        self._logout_holder.configure(width=iw)
+        total = int(self._base_w + iw)
+        self.configure(width=total, height=self._H)
+        if iw < 6:
+            self._logout_lbl.place_forget()
+        else:
+            t = iw / float(self._EXTRA_LOGOUT) if self._EXTRA_LOGOUT else 1.0
+            slide = (1.0 - t) * 16.0
+            self._logout_lbl.place(relx=1.0, rely=0.5, anchor="e", x=-4 - int(slide))
+
+    def _smoothstep(self, t: float) -> float:
+        t = max(0.0, min(1.0, t))
+        return t * t * (3.0 - 2.0 * t)
+
+    def _animate_to(self, target: float) -> None:
+        self._anim_seq += 1
+        seq = self._anim_seq
+        start = float(self._current_extra)
+        target = max(0.0, min(float(target), float(self._EXTRA_LOGOUT)))
+        if abs(start - target) < 0.5:
+            self._apply_extra(target)
+            return
+        step_ms = max(1, self._ANIM_MS // self._STEPS)
+        n = self._STEPS
+
+        def tick(i: int) -> None:
+            if seq != self._anim_seq:
+                return
+            if i > n:
+                self._apply_extra(target)
+                return
+            u = self._smoothstep(i / float(n))
+            self._apply_extra(start + (target - start) * u)
+            self.after(step_ms, lambda: tick(i + 1))
+
+        tick(0)
+
+    def _pointer_inside(self) -> bool:
+        try:
+            mx = self.winfo_pointerx()
+            my = self.winfo_pointery()
+            rx = self.winfo_rootx()
+            ry = self.winfo_rooty()
+            rw = self.winfo_width()
+            rh = self.winfo_height()
+            return rx <= mx < rx + rw and ry <= my < ry + rh
+        except Exception:
+            return False
+
+    def _on_enter(self, _event: Any = None) -> None:
+        if self._leave_job is not None:
+            try:
+                self.after_cancel(self._leave_job)
+            except Exception:
+                pass
+            self._leave_job = None
+        self._animate_to(float(self._EXTRA_LOGOUT))
+
+    def _on_leave(self, _event: Any = None) -> None:
+        def _deferred() -> None:
+            self._leave_job = None
+            if not self._pointer_inside():
+                self._animate_to(0.0)
+
+        if self._leave_job is not None:
+            try:
+                self.after_cancel(self._leave_job)
+            except Exception:
+                pass
+        self._leave_job = self.after(90, _deferred)
+
+    def _click_logout(self, _event: Any = None) -> None:
+        if callable(self._on_logout):
+            self._on_logout()
+
+
 class Preloader(ctk.CTk):
     def __init__(self, callback):
         super().__init__()
@@ -550,7 +715,7 @@ class Preloader(ctk.CTk):
         self.configure(fg_color=CORP_WINDOW_BG)
         _apply_tk_window_chrome_dark(self)
 
-        cale_logo = resolve_asset_path("Naturen2.png")
+        cale_logo = _image_resource_path("Naturen2.png")
 
         try:
             img_pil = Image.open(cale_logo)
@@ -581,7 +746,7 @@ class LoginWindow(ctk.CTk):
         self._auth_user: str | None = None
         self._logged_user = None
         self._login_in_progress = False
-        self.cale_logo = resolve_asset_path("Naturen2.png")
+        self.cale_logo = _image_resource_path("Naturen2.png")
         self.withdraw()
         self.configure(fg_color=CORP_WINDOW_BG)
         _apply_tk_window_chrome_dark(self)
@@ -775,7 +940,7 @@ class AplicatieOfertare(ctk.CTk):
             except Exception:
                 logger.exception("Nu s-a putut seta fereastra principală în mod maximizat (zoomed).")
 
-        self.cale_proiect = os.path.dirname(resolve_asset_path("dummy"))
+        self.cale_proiect = get_project_dir()
         self.nume_db = get_database_path()
 
         self.parola_admin = self.config_app.parola_admin
@@ -810,8 +975,8 @@ class AplicatieOfertare(ctk.CTk):
         self._master_curtain: ctk.CTkFrame | None = None
         self._master_curtain_lbl: ctk.CTkLabel | None = None
 
-        self.cale_logo = resolve_asset_path("Naturen2.png")
-        self.cale_gif = resolve_asset_path("despre.gif")
+        self.cale_logo = _image_resource_path("Naturen2.png")
+        self.cale_gif = _image_resource_path("despre.gif")
 
         try:
             imagine_pil = Image.open(self.cale_logo)
@@ -821,13 +986,13 @@ class AplicatieOfertare(ctk.CTk):
             self.logo_img = None
         self.user_icon_img = None
         try:
-            user_icon_pil = Image.open(resolve_asset_path("imagini/user.png"))
+            user_icon_pil = Image.open(_image_resource_path("imagini/user.png"))
             self.user_icon_img = ctk.CTkImage(light_image=user_icon_pil, dark_image=user_icon_pil, size=(16, 16))
         except Exception:
             logger.warning("Icon user nu s-a încărcat", exc_info=True)
         self.customer_icon_img = None
         try:
-            customer_pil = Image.open(resolve_asset_path("customer.png"))
+            customer_pil = Image.open(_image_resource_path("customer.png"))
             self.customer_icon_img = ctk.CTkImage(
                 light_image=customer_pil, dark_image=customer_pil, size=(22, 22)
             )
@@ -835,7 +1000,7 @@ class AplicatieOfertare(ctk.CTk):
             logger.warning("Icon customer.png nu s-a încărcat (lipsește din proiect?)", exc_info=True)
         self.istoric_icon_img = None
         try:
-            istoric_pil = Image.open(resolve_asset_path("istoric.png"))
+            istoric_pil = Image.open(_image_resource_path("istoric.png"))
             self.istoric_icon_img = ctk.CTkImage(
                 light_image=istoric_pil, dark_image=istoric_pil, size=(22, 22)
             )
@@ -843,7 +1008,7 @@ class AplicatieOfertare(ctk.CTk):
             logger.warning("Icon istoric.png nu s-a încărcat (lipsește din proiect?)", exc_info=True)
         self.logout_icon_img = None
         try:
-            logout_pil = Image.open(resolve_asset_path("logout.png"))
+            logout_pil = Image.open(_image_resource_path("logout.png"))
             self.logout_icon_img = ctk.CTkImage(
                 light_image=logout_pil, dark_image=logout_pil, size=(22, 22)
             )
@@ -2127,49 +2292,13 @@ class AplicatieOfertare(ctk.CTk):
                 command=self._deschide_dev_mode,
             ).pack(side="right", padx=(10, 22), pady=0)
 
-        # Zonă profil: user + ieșire.
-        user_profile_frame = ctk.CTkFrame(
+        # Zonă profil: pill verde compact cu animație hover (logout →).
+        _nume_hdr = self._nume_utilizator_pentru_afisare_ui() or self.utilizator_creat or "—"
+        _InteractiveProfileChip(
             header,
-            fg_color="#2B2B2B",
-            corner_radius=4,
-            border_width=1,
-            border_color="#3E3E3E",
-        )
-        user_profile_frame.pack(side="right", padx=10, pady=0)
-        if self.user_icon_img:
-            ctk.CTkLabel(
-                user_profile_frame,
-                text="",
-                image=self.user_icon_img,
-            ).pack(side="left", padx=(10, 4), pady=8)
-        ctk.CTkLabel(
-            user_profile_frame,
-            text=f"{self._nume_utilizator_pentru_afisare_ui() or self.utilizator_creat or '—'}",
-            font=("Segoe UI", 11),
-            text_color="#ffffff",
-        ).pack(side="left", padx=(4, 10), pady=8)
-        if self.logout_icon_img:
-            lbl_logout_ic = ctk.CTkLabel(
-                user_profile_frame,
-                text="",
-                image=self.logout_icon_img,
-            )
-            lbl_logout_ic.pack(side="left", padx=(0, 4), pady=8)
-            lbl_logout_ic.bind("<Button-1>", lambda _e: self._do_logout())
-        ctk.CTkButton(
-            user_profile_frame,
-            text="Ieșire",
-            width=74,
-            height=30,
-            font=("Segoe UI", 10),
-            fg_color="transparent",
-            border_width=1,
-            border_color="#8b2522",
-            text_color="#ff6b6b",
-            hover_color="#5a1f1f",
-            corner_radius=4,
-            command=self._do_logout,
-        ).pack(side="left", padx=(0, 10), pady=8)
+            display_name=_nume_hdr,
+            on_logout=self._do_logout,
+        ).pack(side="right", padx=10, pady=0)
         main_content = ctk.CTkFrame(self, fg_color=CORP_WINDOW_BG, width=1100, height=590)
         self._main_content_frame = main_content
         self._transition_frame = None

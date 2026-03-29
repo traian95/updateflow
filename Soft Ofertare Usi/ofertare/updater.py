@@ -17,6 +17,7 @@ import requests
 from supabase import Client, create_client
 
 from ofertare.db_cloud import SUPABASE_KEY, SUPABASE_URL
+from ofertare.elevation import launch_updater_elevated
 
 try:
     from packaging.version import Version as _PkgVersion
@@ -84,12 +85,26 @@ def _log_update(message: str) -> None:
         pass
 
 
-def _version_file_path() -> Path:
+def _version_file_path_write() -> Path:
+    """version.json scris de updater: lângă .exe (onedir PyInstaller 6+)."""
     return _app_dir() / VERSION_FILE_NAME
 
 
+def _version_file_path_read() -> Path:
+    """Citire: întâi lângă exe (după update), apoi bundle _internal (instalare inițială)."""
+    w = _version_file_path_write()
+    if w.is_file():
+        return w
+    meipass = getattr(sys, "_MEIPASS", None)
+    if getattr(sys, "frozen", False) and meipass:
+        bundled = Path(meipass) / VERSION_FILE_NAME
+        if bundled.is_file():
+            return bundled
+    return w
+
+
 def get_local_version(default: str = "0.0.0") -> str:
-    path = _version_file_path()
+    path = _version_file_path_read()
     if not path.exists():
         return default
     try:
@@ -105,7 +120,7 @@ def set_local_version(version: str) -> None:
         "version": str(version or "").strip() or "0.0.0",
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    path = _version_file_path()
+    path = _version_file_path_write()
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
@@ -309,10 +324,13 @@ def _python_command_for_updater_script() -> list[str]:
 
 def _launch_zip_updater(update_zip_path: Path, app_dir: Path, new_version: str) -> None:
     """
-    Prefer packaged updater.exe (no Python on PATH). Fallback: updater.py + python/py -3.
-    Both must live in app_dir (same folder as ofertare.exe).
+    Lansare updater extern: pe Windows + updater.exe folosește ShellExecuteW „runas” (ofertare.elevation.launch_updater_elevated)
+    ca să evite WinError 740; aplicația principală se închide imediat după lansare.
+    Altfel: subprocess.Popen (ex. updater.py sub interpretor).
     """
-    exe_path = (app_dir / EXTERNAL_UPDATER_EXE_NAME).resolve()
+    frozen = getattr(sys, "frozen", False)
+    exe_dir = Path(sys.executable).resolve().parent if frozen else app_dir
+    exe_path = (exe_dir / EXTERNAL_UPDATER_EXE_NAME).resolve()
     py_path = (app_dir / EXTERNAL_UPDATER_SCRIPT_NAME).resolve()
     common_suffix = [
         "--zip-path",
@@ -324,15 +342,39 @@ def _launch_zip_updater(update_zip_path: Path, app_dir: Path, new_version: str) 
         "--restart-cmd",
         "|||".join(_restart_command_for_current_runtime()),
     ]
-    if exe_path.is_file():
-        cmd = [str(exe_path)] + common_suffix
+    # Primul argument: os.getcwd() — aliniat cu main.py (chdir get_app_dir); fallback la app_dir.
+    try:
+        app_root = os.getcwd()
+        if os.path.normcase(os.path.normpath(app_root)) != os.path.normcase(
+            os.path.normpath(str(app_dir.resolve()))
+        ):
+            app_root = str(app_dir.resolve())
+    except Exception:
+        app_root = str(app_dir.resolve())
+    if frozen:
+        if not exe_path.is_file():
+            raise FileNotFoundError(
+                f"Lipsește {EXTERNAL_UPDATER_EXE_NAME} lângă executabil: {exe_path}"
+            )
+        cmd = [str(exe_path), app_root] + common_suffix
+    elif exe_path.is_file():
+        cmd = [str(exe_path), app_root] + common_suffix
     elif py_path.is_file():
-        cmd = _python_command_for_updater_script() + [str(py_path)] + common_suffix
+        cmd = _python_command_for_updater_script() + [str(py_path), app_root] + common_suffix
     else:
         raise FileNotFoundError(
             f"External updater not found in {app_dir}: need {EXTERNAL_UPDATER_EXE_NAME} "
             f"or {EXTERNAL_UPDATER_SCRIPT_NAME} next to the application executable."
         )
+
+    use_exe = exe_path.is_file() and str(exe_path).lower().endswith(".exe")
+    if sys.platform == "win32" and use_exe:
+        if not os.path.isfile(str(exe_path)):
+            raise FileNotFoundError(f"Updater not found: {exe_path}")
+        param_line = subprocess.list2cmdline([app_root] + common_suffix)
+        work_dir = str(app_dir.resolve())
+        launch_updater_elevated(str(exe_path.resolve()), param_line, work_dir)
+        return
 
     creation_flags = 0
     if hasattr(subprocess, "DETACHED_PROCESS"):
@@ -340,7 +382,12 @@ def _launch_zip_updater(update_zip_path: Path, app_dir: Path, new_version: str) 
     if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
         creation_flags |= subprocess.CREATE_NEW_PROCESS_GROUP
 
-    subprocess.Popen(cmd, close_fds=True, creationflags=creation_flags)
+    subprocess.Popen(
+        cmd,
+        close_fds=True,
+        creationflags=creation_flags,
+        cwd=app_root,
+    )
 
 
 def install_zip_update(download_url: str, expected_sha256: str = "", new_version: str = "") -> dict[str, Any]:
@@ -491,3 +538,11 @@ def check_and_install_update(*args, **kwargs) -> dict[str, Any]:
         "reason": "legacy_disabled",
         "error": "Legacy exe-swap flow is disabled. Use zip updater flow.",
     }
+
+
+# -----------------------------------------------------------------------------
+# Updater.exe (Tkinter, ZIP, taskkill, GitHub standalone) = fișierul `updater.py`
+# din rădăcina proiectului. NU folosi acest modul ca intrare PyInstaller pentru
+# updater.exe: importurile de nivel superior (requests, supabase) ar îngropa
+# întregul runtime în executabilul de update. Vezi NaturenFlow.spec → Analysis `b`.
+# -----------------------------------------------------------------------------

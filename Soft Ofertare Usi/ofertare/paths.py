@@ -4,38 +4,59 @@ import os
 import sys
 
 
-def resource_path(relative_path):
-    try:
-        base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(".")
-    return os.path.join(base_path, relative_path)
+def get_resource_path(relative_path: str) -> str:
+    """
+    Cale absolută către o resursă din proiect (assets/, version.json lângă exe etc.).
+
+    - Script: rădăcina aplicației (folderul care conține `main.py` și `ofertare/`).
+    - PyInstaller onedir: întâi `os.path.dirname(sys.executable)` (resurse distribuite
+      lângă .exe), apoi `sys._MEIPASS` dacă fișierul e doar în bundle intern.
+    """
+    rel = relative_path.replace("/", os.sep).strip(os.sep)
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        p_exe = os.path.normpath(os.path.join(exe_dir, rel))
+        if os.path.exists(p_exe):
+            return p_exe
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            p_me = os.path.normpath(os.path.join(meipass, rel))
+            if os.path.exists(p_me):
+                return p_me
+        return p_exe
+    # Dezvoltare: `ofertare/paths.py` → părinte = rădăcina proiectului
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.normpath(os.path.join(root, rel))
+
+
+def resource_path(relative_path: str) -> str:
+    """Alias compatibil cu cod vechi; folosește aceeași logică ca `get_resource_path`."""
+    return get_resource_path(relative_path)
 
 
 def get_project_dir() -> str:
-    """Directorul pentru asset-uri (logo, gif). La frozen folosește _MEIPASS (bundle) sau lângă exe."""
+    """Directorul rădăcină al aplicației pentru resurse împachetate (bundle / proiect)."""
     if getattr(sys, "frozen", False):
-        base = getattr(sys, "_MEIPASS", None)
-        if base:
-            return base
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__ + os.sep + ".."))
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            return meipass
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def get_app_dir() -> str:
-    """Directorul aplicației (scriibil: lângă exe). Pentru app_settings.json, baza de date (dacă nu e în APPDATA)."""
+    """Director lângă executabil (scriibil): app_settings.json, logs, version.json la runtime."""
     if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__ + os.sep + ".."))
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def resolve_asset_path(filename: str) -> str:
     # Prefer explicit image-asset folders first, then legacy root-level locations.
-    # This keeps compatibility with older installers while supporting cleaned repository layout.
     candidates = [
-        resource_path(os.path.join("assets", filename)),
-        resource_path(os.path.join("assets", "images", filename)),
-        resource_path(os.path.join("utils", "assets", "images", filename)),
+        get_resource_path(os.path.join("assets", filename)),
+        get_resource_path(os.path.join("assets", "images", filename)),
+        get_resource_path(os.path.join("utils", "assets", "images", filename)),
         os.path.join(get_app_dir(), "utils", "assets", "images", filename),
         os.path.join(get_app_dir(), "assets", "images", filename),
         os.path.join(get_app_dir(), "assets", filename),
@@ -49,4 +70,3 @@ def resolve_asset_path(filename: str) -> str:
         if os.path.exists(path):
             return path
     return candidates[0]
-
