@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import uuid
 import sqlite3
 import re
@@ -172,6 +173,9 @@ def _nume_linie_maner_engs(model: str, fin: str, inc: str) -> str:
     return f"Maner ({inner})"
 # Corporate palette (flat, muted)
 CORP_WINDOW_BG = "#1E1E1E"
+# Rânduri în liste scroll (Istoric / Căutare clienți) — același strat CTk + Tk
+ROW_LIST_BG = "#2b2b2b"
+ROW_SELECTED_BG = "#1e4620"
 # Fundal „Iron Curtain” / root: același gri foarte închis, fără flash alb la sistem
 IRON_CURTAIN_BG = "#1a1a1a"
 CORP_FRAME_BG = "#2D2D2D"
@@ -381,9 +385,98 @@ def _patch_scrollable_frame_canvas(sf, bg_hex: str | None = None) -> None:
         cvs = getattr(sf, "_parent_canvas", None)
         if cvs is not None:
             cvs.configure(bg=color, highlightthickness=0)
-        tk.Frame.configure(sf, bg=color)
+        pf = getattr(sf, "_parent_frame", None)
+        if pf is not None:
+            try:
+                tk.Frame.configure(pf, bg=color, highlightthickness=0)
+            except Exception:
+                pass
+        for attr in ("_scrollable_frame",):
+            inner = getattr(sf, attr, None)
+            if inner is not None:
+                try:
+                    tk.Frame.configure(inner, bg=color, highlightthickness=0)
+                except Exception:
+                    pass
+                break
+        tk.Frame.configure(sf, bg=color, highlightthickness=0)
     except Exception:
         pass
+
+
+def _apply_secondary_toplevel_window_bg(win: ctk.CTkToplevel, bg: str = CORP_WINDOW_BG) -> None:
+    """Fundal Tk + CTk pe Toplevel înainte de pack (margini/padding fără flash alb)."""
+    try:
+        win.tk_setPalette(background=bg)
+    except Exception:
+        pass
+    try:
+        win.configure(fg_color=bg)
+    except Exception:
+        pass
+    for cfg in (
+        {"bg": bg},
+        {"bg_color": bg},
+    ):
+        try:
+            win.configure(**cfg)
+        except Exception:
+            pass
+    try:
+        tk.Wm.configure(win, bg=bg, highlightthickness=0)
+    except Exception:
+        pass
+    _apply_tk_window_chrome_dark(win, bg)
+    _force_ctk_native_dark_bg(win, bg)
+
+
+def _pack_secondary_window_fill_panel(win: ctk.CTkToplevel, bg: str = CORP_WINDOW_BG) -> ctk.CTkFrame:
+    """Panou interior care umple Toplevel-ul: golurile din pack(padx/pady) nu expun fundalul alb al ferestrei."""
+    panel = ctk.CTkFrame(win, fg_color=bg, border_width=0, corner_radius=0)
+    _polish_secondary_frame_surface(panel, bg, border_width=0)
+    panel.pack(fill="both", expand=True)
+    return panel
+
+
+def _polish_secondary_frame_surface(widget: Any, bg_hex: str, *, border_width: int | None = None) -> None:
+    """fg_color + bg_color (CTk) + bg Tk — goluri între pack/grid fără flash alb."""
+    if border_width is not None:
+        try:
+            widget.configure(border_width=border_width)
+        except Exception:
+            pass
+    try:
+        widget.configure(fg_color=bg_hex, bg_color=bg_hex)
+    except Exception:
+        try:
+            widget.configure(fg_color=bg_hex)
+        except Exception:
+            pass
+        try:
+            widget.configure(bg_color=bg_hex)
+        except Exception:
+            pass
+    try:
+        tk.Frame.configure(widget, highlightthickness=0, bg=bg_hex)
+    except Exception:
+        pass
+    _force_ctk_native_dark_bg(widget, bg_hex)
+
+
+def _apply_list_row_frame_native_bg(row_f: Any, bg_hex: str) -> None:
+    """După schimbarea culorii pe rând (select / listă): resincronizează stratul Tk dedesubt."""
+    try:
+        row_f.configure(fg_color=bg_hex, bg_color=bg_hex)
+    except Exception:
+        try:
+            row_f.configure(fg_color=bg_hex)
+        except Exception:
+            pass
+    try:
+        tk.Frame.configure(row_f, highlightthickness=0, bg=bg_hex)
+    except Exception:
+        pass
+    _force_ctk_native_dark_bg(row_f, bg_hex)
 
 
 def _center_dialog_on_screen(win: ctk.CTkToplevel) -> None:
@@ -704,6 +797,7 @@ class AplicatieOfertare(ctk.CTk):
         self._discount_ignore_trace_writes = 0
         self._search_result_pending = None
         self._istoric_fetch_seq = 0
+        self._istoric_user_map_fetch_seq = 0
         self._cautare_fetch_seq = 0
         self._main_content_frame: ctk.CTkFrame | None = None
         self._transition_frame: ctk.CTkFrame | None = None
@@ -1082,12 +1176,20 @@ class AplicatieOfertare(ctk.CTk):
         if win is not None:
             try:
                 if win.winfo_exists():
+                    # 1) Desen în memorie (layout + canvas) înainte de maparea Win32
                     try:
                         win.update_idletasks()
                     except Exception:
                         pass
-                    win.deiconify()
-                    win.lift()
+                    # 2) Abia apoi fereastra devine vizibilă (reduce flash alb)
+                    try:
+                        win.deiconify()
+                    except Exception:
+                        pass
+                    try:
+                        win.lift()
+                    except Exception:
+                        pass
                     try:
                         win.focus_force()
                     except Exception:
@@ -2474,11 +2576,21 @@ class AplicatieOfertare(ctk.CTk):
         self.win_cautare = ctk.CTkToplevel(self)
         self.win_cautare.withdraw()
         self.win_cautare.title("Bază de Date Clienți")
-        self.win_cautare.configure(fg_color=CORP_WINDOW_BG)
-        _apply_tk_window_chrome_dark(self.win_cautare)
+        _apply_secondary_toplevel_window_bg(self.win_cautare)
         _apply_fullscreen_workspace(self.win_cautare)
+        _body_cautare = _pack_secondary_window_fill_panel(self.win_cautare)
 
-        nav_c = ctk.CTkFrame(self.win_cautare, fg_color=CORP_WINDOW_BG)
+        nav_c = ctk.CTkFrame(
+            _body_cautare,
+            fg_color=CORP_WINDOW_BG,
+            border_width=0,
+            corner_radius=0,
+        )
+        _polish_secondary_frame_surface(nav_c, CORP_WINDOW_BG, border_width=0)
+        try:
+            tk.Frame.configure(nav_c, bg=CORP_WINDOW_BG, highlightthickness=0)
+        except Exception:
+            pass
         nav_c.pack(fill="x", padx=20, pady=(10, 4))
         ctk.CTkButton(
             nav_c,
@@ -2491,7 +2603,17 @@ class AplicatieOfertare(ctk.CTk):
             command=lambda: self._inchide_fereastra_secundara("win_cautare"),
         ).pack(side="left")
 
-        f_filtre = ctk.CTkFrame(self.win_cautare)
+        f_filtre = ctk.CTkFrame(
+            _body_cautare,
+            fg_color=CORP_WINDOW_BG,
+            border_width=0,
+            corner_radius=0,
+        )
+        _polish_secondary_frame_surface(f_filtre, CORP_WINDOW_BG, border_width=0)
+        try:
+            tk.Frame.configure(f_filtre, bg=CORP_WINDOW_BG, highlightthickness=0)
+        except Exception:
+            pass
         f_filtre.pack(fill="x", padx=20, pady=(14, 10))
 
         ctk.CTkLabel(f_filtre, text="Caută Client:").grid(row=0, column=0, padx=10, pady=10)
@@ -2510,7 +2632,18 @@ class AplicatieOfertare(ctk.CTk):
         self.combo_interval.set("Toate")
         self.combo_interval.grid(row=0, column=3, padx=10, pady=10)
 
-        f_header = ctk.CTkFrame(self.win_cautare, fg_color="#2D2D2D", height=38, corner_radius=4)
+        f_header = ctk.CTkFrame(
+            _body_cautare,
+            fg_color="#2D2D2D",
+            height=38,
+            corner_radius=4,
+            border_width=0,
+        )
+        _polish_secondary_frame_surface(f_header, "#2D2D2D", border_width=0)
+        try:
+            tk.Frame.configure(f_header, bg="#2D2D2D", highlightthickness=0)
+        except Exception:
+            pass
         f_header.pack(fill="x", padx=20, pady=(0, 4))
         f_header.pack_propagate(False)
         headers = [
@@ -2524,18 +2657,43 @@ class AplicatieOfertare(ctk.CTk):
             lbl.place(relx=rel_x, rely=0.5, anchor=anchor)
 
         ctk.CTkLabel(
-            self.win_cautare,
+            _body_cautare,
             text="Selectați un rând, apoi «Detalii / Oferte» — dublu-click deschide direct.",
             text_color="#aaaaaa",
             font=("Segoe UI", 12),
             anchor="w",
         ).pack(fill="x", padx=24, pady=(0, 4))
+        try:
+            self.win_cautare.update_idletasks()
+        except Exception:
+            pass
 
-        self.scroll_tabel = ctk.CTkScrollableFrame(self.win_cautare, fg_color=CORP_WINDOW_BG)
+        self.scroll_tabel = ctk.CTkScrollableFrame(
+            _body_cautare,
+            fg_color=CORP_WINDOW_BG,
+            border_width=0,
+            corner_radius=0,
+        )
+        _polish_secondary_frame_surface(self.scroll_tabel, CORP_WINDOW_BG, border_width=0)
         self.scroll_tabel.pack(fill="both", expand=True, padx=20, pady=(0, 6))
         _patch_scrollable_frame_canvas(self.scroll_tabel, CORP_WINDOW_BG)
+        try:
+            self.win_cautare.update_idletasks()
+        except Exception:
+            pass
 
-        cautare_actions = ctk.CTkFrame(self.win_cautare, fg_color="#2D2D2D", border_width=1, border_color="#333333")
+        cautare_actions = ctk.CTkFrame(
+            _body_cautare,
+            fg_color="#2D2D2D",
+            border_width=1,
+            border_color="#333333",
+            corner_radius=4,
+        )
+        _polish_secondary_frame_surface(cautare_actions, "#2D2D2D", border_width=1)
+        try:
+            tk.Frame.configure(cautare_actions, bg="#2D2D2D", highlightthickness=0)
+        except Exception:
+            pass
         cautare_actions.pack(fill="x", padx=20, pady=(0, 10))
         self._cautare_btn_detalii = ctk.CTkButton(
             cautare_actions,
@@ -2561,6 +2719,12 @@ class AplicatieOfertare(ctk.CTk):
         self.win_cautare.bind("<Destroy>", _on_cautare_destroy)
 
         self._cautare_row_pool = None
+        try:
+            self.win_cautare.update_idletasks()
+            self.win_cautare.update()
+            time.sleep(0.01)
+        except Exception:
+            pass
         self._refresh_tabel_clienti_immediate()
 
     def _refresh_tabel_clienti_immediate(self):
@@ -2598,7 +2762,9 @@ class AplicatieOfertare(ctk.CTk):
         for i, f in enumerate(frames):
             try:
                 if f.winfo_exists():
-                    f.configure(fg_color="#1e4620" if (idx is not None and i == idx) else "#2b2b2b")
+                    bg = ROW_SELECTED_BG if (idx is not None and i == idx) else ROW_LIST_BG
+                    f.configure(fg_color=bg)
+                    _apply_list_row_frame_native_bg(f, bg)
             except Exception:
                 pass
         btn = getattr(self, "_cautare_btn_detalii", None)
@@ -2645,7 +2811,13 @@ class AplicatieOfertare(ctk.CTk):
                 pass
         sk = getattr(self, "_cautare_skeleton", None)
         if sk is None or not sk.winfo_exists():
-            sk = ctk.CTkFrame(st, fg_color="transparent")
+            sk = ctk.CTkFrame(
+                st,
+                fg_color=CORP_WINDOW_BG,
+                border_width=0,
+                corner_radius=0,
+            )
+            _polish_secondary_frame_surface(sk, CORP_WINDOW_BG, border_width=0)
             ctk.CTkLabel(
                 sk,
                 text="Se încarcă clienții…",
@@ -2653,7 +2825,8 @@ class AplicatieOfertare(ctk.CTk):
                 text_color="#9E9E9E",
             ).pack(pady=(12, 8))
             for _ in range(4):
-                bar = ctk.CTkFrame(sk, height=10, fg_color="#333333", corner_radius=3)
+                bar = ctk.CTkFrame(sk, height=10, fg_color="#333333", corner_radius=3, border_width=0)
+                _polish_secondary_frame_surface(bar, "#333333", border_width=0)
                 bar.pack(fill="x", padx=24, pady=5)
             self._cautare_skeleton = sk
         sk.pack(fill="x", padx=12, pady=16)
@@ -2779,7 +2952,14 @@ class AplicatieOfertare(ctk.CTk):
         _muted = "#9E9E9E"
 
         while len(pool) < len(date_clienti):
-            row_f = ctk.CTkFrame(st, height=44, fg_color="#2b2b2b", corner_radius=4)
+            row_f = ctk.CTkFrame(
+                st,
+                height=44,
+                fg_color=ROW_LIST_BG,
+                corner_radius=4,
+                border_width=0,
+            )
+            _polish_secondary_frame_surface(row_f, ROW_LIST_BG, border_width=0)
             row_f.pack_propagate(False)
             lbl_n = ctk.CTkLabel(row_f, text="", font=_font_name, anchor="w")
             lbl_n.place(relx=0.02, rely=0.5, anchor="w")
@@ -2800,7 +2980,8 @@ class AplicatieOfertare(ctk.CTk):
             cell["lbl_a"].configure(text=str(adresa or ""))
             cell["lbl_t"].configure(text=str(tel or ""))
             cell["lbl_no"].configure(text=str(nr_oferte))
-            row_f.configure(fg_color="#2b2b2b")
+            row_f.configure(fg_color=ROW_LIST_BG)
+            _apply_list_row_frame_native_bg(row_f, ROW_LIST_BG)
             row_f.pack(fill="x", pady=1)
             self._cautare_row_frames.append(row_f)
 
@@ -6655,11 +6836,21 @@ class AplicatieOfertare(ctk.CTk):
         self.win_istoric = ctk.CTkToplevel(self)
         self.win_istoric.withdraw()
         self.win_istoric.title("Istoric")
-        self.win_istoric.configure(fg_color=CORP_WINDOW_BG)
-        _apply_tk_window_chrome_dark(self.win_istoric)
+        _apply_secondary_toplevel_window_bg(self.win_istoric)
         _apply_fullscreen_workspace(self.win_istoric)
+        _body_istoric = _pack_secondary_window_fill_panel(self.win_istoric)
 
-        nav_i = ctk.CTkFrame(self.win_istoric, fg_color=CORP_WINDOW_BG)
+        nav_i = ctk.CTkFrame(
+            _body_istoric,
+            fg_color=CORP_WINDOW_BG,
+            border_width=0,
+            corner_radius=0,
+        )
+        _polish_secondary_frame_surface(nav_i, CORP_WINDOW_BG, border_width=0)
+        try:
+            tk.Frame.configure(nav_i, bg=CORP_WINDOW_BG, highlightthickness=0)
+        except Exception:
+            pass
         nav_i.pack(fill="x", padx=20, pady=(10, 4))
         ctk.CTkButton(
             nav_i,
@@ -6672,26 +6863,50 @@ class AplicatieOfertare(ctk.CTk):
             command=lambda: self._inchide_fereastra_secundara("win_istoric"),
         ).pack(side="left")
 
-        search_f = ctk.CTkFrame(self.win_istoric, fg_color="#2b2b2b")
+        search_f = ctk.CTkFrame(
+            _body_istoric,
+            fg_color="#2b2b2b",
+            border_width=0,
+            corner_radius=0,
+        )
+        _polish_secondary_frame_surface(search_f, "#2b2b2b", border_width=0)
+        try:
+            tk.Frame.configure(search_f, bg="#2b2b2b", highlightthickness=0)
+        except Exception:
+            pass
         search_f.pack(fill="x", padx=20, pady=5)
         self.ent_cauta_istoric = ctk.CTkEntry(
             search_f, placeholder_text="Caută după nume client...", height=40
         )
         self.ent_cauta_istoric.pack(side="left", fill="x", expand=True, padx=10, pady=10)
         self.ent_cauta_istoric.bind("<KeyRelease>", self._on_keyrelease_cauta_istoric)
-        filters_f = ctk.CTkFrame(self.win_istoric, fg_color="#2D2D2D", border_width=1, border_color="#333333")
+        filters_f = ctk.CTkFrame(
+            _body_istoric,
+            fg_color="#2D2D2D",
+            border_width=1,
+            border_color="#333333",
+            corner_radius=4,
+        )
+        _polish_secondary_frame_surface(filters_f, "#2D2D2D", border_width=1)
+        try:
+            tk.Frame.configure(filters_f, bg="#2D2D2D", highlightthickness=0)
+        except Exception:
+            pass
         filters_f.pack(fill="x", padx=20, pady=(0, 5))
         ctk.CTkLabel(filters_f, text="Filtre:", text_color="#aaaaaa").pack(side="left", padx=(10, 8), pady=10)
 
-        self._istoric_user_map = self._get_istoric_user_map()
+        self._istoric_user_map = {"Toți": ""}
         self.opt_user_istoric = ctk.CTkOptionMenu(
             filters_f,
             width=220,
-            values=list(self._istoric_user_map.keys()),
+            values=["Toți"],
             command=lambda _value: self.refresh_lista_istoric(),
         )
         self.opt_user_istoric.set("Toți")
         self.opt_user_istoric.pack(side="left", padx=(0, 10), pady=10)
+        self._istoric_user_map_fetch_seq += 1
+        _um_req = self._istoric_user_map_fetch_seq
+        threading.Thread(target=self._istoric_user_map_worker, args=(_um_req,), daemon=True).start()
 
         self.ent_data_start_istoric = ctk.CTkEntry(filters_f, width=130, placeholder_text="De la (dd.mm.yyyy)")
         self.ent_data_start_istoric.pack(side="left", padx=(0, 6), pady=10)
@@ -6729,8 +6944,22 @@ class AplicatieOfertare(ctk.CTk):
             fg_color="#2E7D32",
             command=self._reset_istoric_filters,
         ).pack(side="left", padx=(0, 10), pady=10)
+        try:
+            self.win_istoric.update_idletasks()
+        except Exception:
+            pass
 
-        self.scroll_istoric = ctk.CTkFrame(self.win_istoric, fg_color=CORP_WINDOW_BG)
+        self.scroll_istoric = ctk.CTkFrame(
+            _body_istoric,
+            fg_color=CORP_WINDOW_BG,
+            border_width=0,
+            corner_radius=0,
+        )
+        _polish_secondary_frame_surface(self.scroll_istoric, CORP_WINDOW_BG, border_width=0)
+        try:
+            tk.Frame.configure(self.scroll_istoric, bg=CORP_WINDOW_BG, highlightthickness=0)
+        except Exception:
+            pass
         self.scroll_istoric.pack(fill="both", expand=True, padx=20, pady=10)
         self._istoric_row_pool = None
         self._istoric_empty_placeholder = None
@@ -6741,7 +6970,14 @@ class AplicatieOfertare(ctk.CTk):
             font=("Segoe UI", 12),
             anchor="w",
         ).pack(fill="x", padx=8, pady=(0, 6))
-        _hdr_i = ctk.CTkFrame(self.scroll_istoric, fg_color="#2D2D2D", height=38, corner_radius=4)
+        _hdr_i = ctk.CTkFrame(
+            self.scroll_istoric,
+            fg_color="#2D2D2D",
+            height=38,
+            corner_radius=4,
+            border_width=0,
+        )
+        _polish_secondary_frame_surface(_hdr_i, "#2D2D2D", border_width=0)
         _hdr_i.pack(fill="x", padx=4, pady=(0, 4))
         _hdr_i.pack_propagate(False)
         for text, rel_x, anchor in (
@@ -6755,11 +6991,32 @@ class AplicatieOfertare(ctk.CTk):
             ctk.CTkLabel(_hdr_i, text=text, font=("Segoe UI", 12), text_color="#2E7D32").place(
                 relx=rel_x, rely=0.5, anchor=anchor
             )
-        self._istoric_list_scroll = ctk.CTkScrollableFrame(self.scroll_istoric, fg_color=CORP_WINDOW_BG)
+        self._istoric_list_scroll = ctk.CTkScrollableFrame(
+            self.scroll_istoric,
+            fg_color=CORP_WINDOW_BG,
+            border_width=0,
+            corner_radius=0,
+        )
+        _polish_secondary_frame_surface(self._istoric_list_scroll, CORP_WINDOW_BG, border_width=0)
         self._istoric_list_scroll.pack(fill="both", expand=True, padx=4, pady=0)
         _patch_scrollable_frame_canvas(self._istoric_list_scroll, CORP_WINDOW_BG)
+        try:
+            self.win_istoric.update_idletasks()
+        except Exception:
+            pass
         _can_del = self._privileges[2] if self._privileges else 1
-        _actions_i = ctk.CTkFrame(self.scroll_istoric, fg_color="#2D2D2D", border_width=1, border_color="#333333")
+        _actions_i = ctk.CTkFrame(
+            self.scroll_istoric,
+            fg_color="#2D2D2D",
+            border_width=1,
+            border_color="#333333",
+            corner_radius=4,
+        )
+        _polish_secondary_frame_surface(_actions_i, "#2D2D2D", border_width=1)
+        try:
+            tk.Frame.configure(_actions_i, bg="#2D2D2D", highlightthickness=0)
+        except Exception:
+            pass
         _actions_i.pack(fill="x", pady=(8, 0), padx=5)
         self._istoric_btn_open = ctk.CTkButton(
             _actions_i, text="DESCHIDE", width=100, command=self._istoric_action_deschide
@@ -6797,13 +7054,19 @@ class AplicatieOfertare(ctk.CTk):
                 command=self._istoric_action_sterge,
             )
             self._istoric_btn_del.pack(side="left", padx=6, pady=8)
+        try:
+            self.win_istoric.update_idletasks()
+            self.win_istoric.update()
+            time.sleep(0.01)
+        except Exception:
+            pass
         self.refresh_lista_istoric()
 
-    def _get_istoric_user_map(self):
+    def _build_istoric_user_map_from_cursor(self, cursor) -> dict[str, str]:
         out = {"Toți": ""}
         used = {"Toți"}
         try:
-            for row in get_approved_users_with_privileges(self.cursor):
+            for row in get_approved_users_with_privileges(cursor):
                 nume_complet = (row[1] or "").strip() if len(row) > 1 else ""
                 username = (row[2] or "").strip() if len(row) > 2 else ""
                 if not username:
@@ -6816,6 +7079,60 @@ class AplicatieOfertare(ctk.CTk):
         except Exception:
             logger.exception("Nu am putut încărca lista de useri pentru filtre istoric")
         return out
+
+    def _istoric_user_map_worker(self, req_id: int) -> None:
+        out: dict[str, str] = {"Toți": ""}
+        try:
+            db = open_db(get_database_path())
+            try:
+                out = self._build_istoric_user_map_from_cursor(db.cursor)
+            finally:
+                try:
+                    co = getattr(db, "conn", None)
+                    fn = getattr(co, "close", None)
+                    if callable(fn):
+                        fn()
+                except Exception:
+                    pass
+        except Exception:
+            logger.exception("Nu am putut încărca lista de useri pentru filtre istoric (background)")
+            out = {"Toți": ""}
+        snapshot = dict(out)
+        self.after(0, lambda rid=req_id, m=snapshot: self._apply_istoric_user_map_result(rid, m))
+
+    def _apply_istoric_user_map_result(self, req_id: int, user_map: dict[str, str]) -> None:
+        if req_id != getattr(self, "_istoric_user_map_fetch_seq", 0):
+            return
+        w = getattr(self, "win_istoric", None)
+        if w is None:
+            return
+        try:
+            if not w.winfo_exists():
+                return
+        except Exception:
+            return
+        self._istoric_user_map = user_map
+        opt = getattr(self, "opt_user_istoric", None)
+        if opt is None:
+            return
+        try:
+            if not opt.winfo_exists():
+                return
+        except Exception:
+            return
+        keys = list(user_map.keys())
+        cur = (opt.get() or "").strip()
+        try:
+            opt.configure(values=keys)
+            if cur in user_map:
+                opt.set(cur)
+            else:
+                opt.set("Toți")
+        except Exception:
+            pass
+
+    def _get_istoric_user_map(self):
+        return self._build_istoric_user_map_from_cursor(self.cursor)
 
     def _normalize_istoric_date_input(self, raw_value: str):
         text = (raw_value or "").strip()
@@ -6888,7 +7205,13 @@ class AplicatieOfertare(ctk.CTk):
                 pass
         sk = getattr(self, "_istoric_skeleton", None)
         if sk is None or not sk.winfo_exists():
-            sk = ctk.CTkFrame(list_scroll, fg_color="transparent")
+            sk = ctk.CTkFrame(
+                list_scroll,
+                fg_color=CORP_WINDOW_BG,
+                border_width=0,
+                corner_radius=0,
+            )
+            _polish_secondary_frame_surface(sk, CORP_WINDOW_BG, border_width=0)
             ctk.CTkLabel(
                 sk,
                 text="Se încarcă istoricul…",
@@ -6896,7 +7219,8 @@ class AplicatieOfertare(ctk.CTk):
                 text_color="#9E9E9E",
             ).pack(pady=(12, 8))
             for _ in range(5):
-                bar = ctk.CTkFrame(sk, height=10, fg_color="#333333", corner_radius=3)
+                bar = ctk.CTkFrame(sk, height=10, fg_color="#333333", corner_radius=3, border_width=0)
+                _polish_secondary_frame_surface(bar, "#333333", border_width=0)
                 bar.pack(fill="x", padx=20, pady=4)
             self._istoric_skeleton = sk
         sk.pack(fill="x", padx=12, pady=16)
@@ -7064,7 +7388,14 @@ class AplicatieOfertare(ctk.CTk):
             return
 
         while len(pool) < len(istoric_rows):
-            row_f = ctk.CTkFrame(list_scroll, height=44, fg_color="#2b2b2b", corner_radius=4)
+            row_f = ctk.CTkFrame(
+                list_scroll,
+                height=44,
+                fg_color=ROW_LIST_BG,
+                corner_radius=4,
+                border_width=0,
+            )
+            _polish_secondary_frame_surface(row_f, ROW_LIST_BG, border_width=0)
             row_f.pack_propagate(False)
             lbl_nume = ctk.CTkLabel(row_f, text="", font=_font_name, anchor="w")
             lbl_nume.place(relx=0.02, rely=0.5, anchor="w")
@@ -7129,7 +7460,8 @@ class AplicatieOfertare(ctk.CTk):
             cell["lbl_nr"].configure(text=f"#{nr_inreg}")
             cell["lbl_tot"].configure(text=total_txt)
             cell["lbl_st"].configure(text=status_text)
-            row_f.configure(fg_color="#2b2b2b")
+            row_f.configure(fg_color=ROW_LIST_BG)
+            _apply_list_row_frame_native_bg(row_f, ROW_LIST_BG)
             row_f.pack(fill="x", pady=1)
             self._istoric_row_frames.append(row_f)
 
@@ -7203,7 +7535,9 @@ class AplicatieOfertare(ctk.CTk):
         for i, f in enumerate(frames):
             try:
                 if f.winfo_exists():
-                    f.configure(fg_color="#1e4620" if (idx is not None and i == idx) else "#2b2b2b")
+                    bg = ROW_SELECTED_BG if (idx is not None and i == idx) else ROW_LIST_BG
+                    f.configure(fg_color=bg)
+                    _apply_list_row_frame_native_bg(f, bg)
             except Exception:
                 pass
         self._on_istoric_listbox_select()
