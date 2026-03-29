@@ -2,7 +2,6 @@ import logging
 import os
 
 from ofertare.ui import run_app
-from ofertare.updater import check_for_updates, get_local_version, install_zip_update
 
 
 def _setup_logging() -> None:
@@ -24,36 +23,9 @@ def _setup_logging() -> None:
         logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 
-def check_and_start_auto_update() -> bool:
-    """
-    Returneaza True daca a pornit updater-ul extern si aplicatia trebuie inchisa imediat.
-    """
-    logger = logging.getLogger(__name__)
-
-    try:
-        info = check_for_updates(get_local_version())
-        if not info.get("update_available"):
-            return False
-        download_url = str(info.get("download_url") or "").strip()
-        version_cloud = str(info.get("version_cloud") or "").strip()
-        if not download_url or not version_cloud:
-            return False
-        logger.info("Update gasit (%s -> %s).", get_local_version(), version_cloud)
-        result = install_zip_update(
-            download_url=download_url,
-            expected_sha256=str(info.get("sha256") or ""),
-            new_version=version_cloud,
-        )
-        return bool(result.get("ok"))
-    except Exception as exc:
-        logger.exception("Auto-update esuat: %s", exc)
-        return False
-
-
 def main() -> None:
     _setup_logging()
-    if check_and_start_auto_update():
-        os._exit(0)
+    # Verificarea și instalarea update (GitHub Releases) se fac din UI, după confirmare CTkMessagebox.
     run_app()
 
 

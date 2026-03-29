@@ -11,7 +11,7 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import requests
 from supabase import Client, create_client
@@ -28,6 +28,10 @@ APP_SLUG = "naturen_flow"
 UPDATE_ARCHIVE_NAME = "update.zip"
 VERSION_FILE_NAME = "version.json"
 UPDATE_LOG_FILE = "update-client.log"
+# GitHub Releases — sursa de verificare pentru client (override prin variabile de mediu).
+GITHUB_RELEASES_OWNER = (os.environ.get("GITHUB_RELEASES_OWNER") or "traian95").strip()
+GITHUB_RELEASES_REPO = (os.environ.get("GITHUB_RELEASES_REPO") or "updateflow").strip()
+GITHUB_API_VERSION_HEADER = "2022-11-28"
 # External helper next to ofertare.exe (never "update.py" — that name is wrong).
 EXTERNAL_UPDATER_EXE_NAME = "updater.exe"
 EXTERNAL_UPDATER_SCRIPT_NAME = "updater.py"
@@ -120,14 +124,6 @@ SUPABASE_ADMIN_URL = (os.environ.get("SUPABASE_ADMIN_URL") or SUPABASE_URL or ""
 SUPABASE_ADMIN_SERVICE_ROLE_KEY = (os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
 
 
-def _get_supabase_client() -> Client:
-    url = SUPABASE_URL.strip()
-    key = SUPABASE_KEY.strip()
-    if not url or not key:
-        raise RuntimeError("Lipsesc SUPABASE_URL/SUPABASE_KEY in configurarea aplicatiei.")
-    return create_client(url, key)
-
-
 def _get_supabase_admin_client() -> Client:
     if not SUPABASE_ADMIN_URL or not SUPABASE_ADMIN_SERVICE_ROLE_KEY:
         raise RuntimeError(
@@ -147,9 +143,21 @@ def _normalize_version(version: str) -> tuple[int, ...]:
     return tuple(parts or [0])
 
 
+def _strip_release_version_prefix(version: str) -> str:
+    """Elimină prefixul 'v' din tag-uri GitHub (ex. v1.2.3 -> 1.2.3)."""
+    s = (version or "").strip()
+    if len(s) >= 2 and s[0] in "vV" and (s[1].isdigit() or s[1] == "."):
+        return s[1:].strip()
+    return s
+
+
+def _normalize_semver_for_compare(version: str) -> str:
+    return _strip_release_version_prefix(version)
+
+
 def _is_remote_newer(local_version: str, remote_version: str) -> bool:
-    local_clean = (local_version or "").strip()
-    remote_clean = (remote_version or "").strip()
+    local_clean = _normalize_semver_for_compare(local_version or "")
+    remote_clean = _normalize_semver_for_compare(remote_version or "")
     if not remote_clean:
         return False
     if _PkgVersion is not None:
@@ -157,41 +165,36 @@ def _is_remote_newer(local_version: str, remote_version: str) -> bool:
             return _PkgVersion(remote_clean) > _PkgVersion(local_clean or "0")
         except Exception:
             pass
-    # Fallback simplu: daca versiunile difera, consideram remote mai nou.
     if remote_clean != local_clean:
         return _normalize_version(remote_clean) > _normalize_version(local_clean)
     return False
 
 
-def _get_latest_active_update_row(supabase: Client) -> Optional[dict[str, Any]]:
-    """Caută ultimul rând activ pentru `APP_SLUG` pe coloana `app_name` (fără `slug` — multe scheme Supabase nu au coloana slug)."""
+def _github_releases_request_headers() -> dict[str, str]:
+    headers: dict[str, str] = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "NaturenFlow-App",
+        "X-GitHub-Api-Version": GITHUB_API_VERSION_HEADER,
+    }
+    token = (os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
 
-    def _fetch_filtered(app_column: str) -> Optional[dict[str, Any]]:
-        try:
-            q = supabase.table(TABLE_UPDATES).select("*")
-            try:
-                q = q.eq("is_active", True)
-            except Exception:
-                pass
-            rows = q.eq(app_column, APP_SLUG).order("created_at", desc=True).limit(1).execute().data or []
-            return rows[0] if rows else None
-        except Exception:
-            return None
 
-    row = _fetch_filtered("app_name")
-    if row:
-        return row
-
-    try:
-        q = supabase.table(TABLE_UPDATES).select("*")
-        try:
-            q = q.eq("is_active", True)
-        except Exception:
-            pass
-        rows = q.order("created_at", desc=True).limit(1).execute().data or []
-        return rows[0] if rows else None
-    except Exception:
-        return None
+def _first_github_release_asset_url(payload: dict[str, Any]) -> tuple[str, str]:
+    """
+    GitHub API: primul element din assets — (browser_download_url, nume).
+    """
+    assets = payload.get("assets")
+    if not isinstance(assets, list) or not assets:
+        return "", ""
+    first = assets[0]
+    if not isinstance(first, dict):
+        return "", ""
+    url = str(first.get("browser_download_url") or "").strip()
+    name = str(first.get("name") or "").strip()
+    return url, name
 
 
 def _normalize_update_row(row: dict[str, Any] | None) -> dict[str, Any]:
@@ -370,44 +373,98 @@ def install_zip_update(download_url: str, expected_sha256: str = "", new_version
         return {"ok": False, "error": str(exc)}
 
 def check_for_updates(version_locala: str | None = None) -> dict[str, Any]:
-    try:
-        supabase = _get_supabase_client()
-        local_clean = str(version_locala or get_local_version()).strip()
-        _log_console(f"Versiunea locala este: {local_clean}")
-        latest_updates_row = None
-        try:
-            latest_updates_row = _get_latest_active_update_row(supabase)
-        except Exception as exc_u:
-            _log_console(f"[Updater] app_updates: {exc_u}")
-        row = _normalize_update_row(latest_updates_row)
-        version_cloud = row.get("version", "")
-        download_url = row.get("download_url", "")
-        if not version_cloud:
-            _log_console("Cea mai noua versiune de pe Supabase este: - (fara candidati)")
-            return {"update_available": False, "reason": "no_remote_version", "version_local": local_clean}
-        if not _is_remote_newer(local_clean, version_cloud):
-            return {
-                "update_available": False,
-                "reason": "already_latest",
-                "version_local": local_clean,
-                "version_cloud": version_cloud,
-                "version_source": "app_updates",
-            }
+    """Ultimul release GitHub vs. version.json; fără Supabase. Aliasuri: update_found/version și update_available/version_cloud."""
+    local_clean = str(version_locala or get_local_version()).strip()
+    _log_console(f"Versiunea locala este: {local_clean}")
 
-        return {
-            "update_available": True,
+    def _base_false(**extra: Any) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "update_found": False,
+            "update_available": False,
+            "version": "",
+            "version_cloud": "",
+            "download_url": "",
+            "notes": "",
             "version_local": local_clean,
-            "version_cloud": version_cloud,
-            "download_url": download_url,
-            "sha256": row.get("sha256", ""),
-            "mandatory": bool(row.get("mandatory", False)),
-            "notes": row.get("notes", ""),
-            "is_active": bool(row.get("is_active", True)),
-            "version_source": "app_updates",
+            "version_source": "github_releases",
         }
+        out.update(extra)
+        return out
+
+    owner = GITHUB_RELEASES_OWNER
+    repo = GITHUB_RELEASES_REPO
+    if not owner or not repo:
+        _log_console("[Updater] GitHub releases: owner/repo neconfigurat (GITHUB_RELEASES_OWNER / GITHUB_RELEASES_REPO).")
+        return _base_false(reason="github_not_configured")
+
+    api_url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
+    headers = _github_releases_request_headers()
+
+    try:
+        response = requests.get(api_url, headers=headers, timeout=30)
+    except requests.RequestException as exc:
+        _log_console(f"[Updater] Eroare rețea GitHub: {exc}")
+        return _base_false(reason="error", error=str(exc))
+
+    if response.status_code == 404:
+        return _base_false(reason="no_github_release")
+    if response.status_code == 403:
+        _log_console("[Updater] GitHub API 403 (rate limit sau acces refuzat).")
+        return _base_false(reason="github_forbidden")
+
+    if response.status_code != 200:
+        return _base_false(reason="error", error=f"github_api_http_{response.status_code}")
+
+    try:
+        release = response.json()
     except Exception as exc:
-        _log_console(f"[Updater] Eroare la verificarea update-ului: {exc}")
-        return {"update_available": False, "reason": "error", "error": str(exc)}
+        return _base_false(reason="error", error=str(exc))
+
+    if not isinstance(release, dict):
+        return _base_false(reason="error", error="github_api_invalid_json")
+
+    tag_raw = str(release.get("tag_name") or "").strip()
+    version_cloud = _normalize_semver_for_compare(tag_raw) or tag_raw
+    notes = str(release.get("body") or "").strip()
+    release_html = str(release.get("html_url") or "").strip()
+
+    if not version_cloud:
+        return _base_false(reason="no_remote_version", notes=notes)
+
+    download_url, asset_name = _first_github_release_asset_url(release)
+
+    if not download_url:
+        _log_console("[Updater] Release GitHub fără assets sau fără URL la primul asset.")
+        return _base_false(
+            reason="no_release_asset",
+            version=version_cloud,
+            version_cloud=version_cloud,
+            notes=notes,
+        )
+
+    if not _is_remote_newer(local_clean, version_cloud):
+        return _base_false(
+            reason="already_latest",
+            version=version_cloud,
+            version_cloud=version_cloud,
+            notes=notes,
+        )
+
+    return {
+        "update_found": True,
+        "update_available": True,
+        "version": version_cloud,
+        "version_cloud": version_cloud,
+        "version_local": local_clean,
+        "download_url": download_url,
+        "sha256": "",
+        "mandatory": False,
+        "notes": notes,
+        "is_active": True,
+        "version_source": "github_releases",
+        "release_html_url": release_html,
+        "zip_asset_name": asset_name,
+    }
 
 
 def list_updates_for_admin(limit: int = 30) -> list[dict[str, Any]]:

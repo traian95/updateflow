@@ -17,6 +17,7 @@ import unicodedata
 import json
 import webbrowser
 from datetime import datetime, timedelta
+from typing import Any
 
 import customtkinter as ctk
 import pandas as pd
@@ -799,6 +800,10 @@ class AplicatieOfertare(ctk.CTk):
         self._istoric_fetch_seq = 0
         self._istoric_user_map_fetch_seq = 0
         self._cautare_fetch_seq = 0
+        self._istoric_render_after_id = None
+        self._istoric_render_gen = 0
+        self._cautare_render_after_id = None
+        self._cautare_render_gen = 0
         self._main_content_frame: ctk.CTkFrame | None = None
         self._transition_frame: ctk.CTkFrame | None = None
         self._main_transition_active = False
@@ -1390,9 +1395,41 @@ class AplicatieOfertare(ctk.CTk):
             self._hide_version_alert_bar()
             return
         self._show_version_alert_bar(result)
-        if not self._auto_update_started:
-            self._auto_update_started = True
-            self._start_auto_update_install(result)
+        try:
+            self.update_idletasks()
+        except Exception:
+            pass
+        self._offer_auto_update_confirm(result)
+
+    def _offer_auto_update_confirm(self, result: dict[str, Any]) -> None:
+        if not self.winfo_exists():
+            return
+        if self._auto_update_started:
+            return
+        download_url = str(result.get("download_url") or "").strip()
+        version_cloud = str(result.get("version_cloud") or "").strip()
+        if not download_url or not version_cloud:
+            return
+        msg = (
+            f"Este disponibilă versiunea {version_cloud} (local: {self.APP_VERSION}).\n\n"
+            "Descărcați și instalați actualizarea acum? Aplicația se va închide pentru instalare."
+        )
+        dialog = CTkMessagebox(
+            master=self,
+            title="Actualizare",
+            message=msg,
+            option_1="Da, instalează",
+            option_2="Nu acum",
+            icon="question",
+            width=460,
+            height=280,
+            wraplength=420,
+        )
+        choice = dialog.get()
+        if choice != "Da, instalează":
+            return
+        self._auto_update_started = True
+        self._start_auto_update_install(result)
 
     def _start_auto_update_install(self, result: dict[str, Any]) -> None:
         download_url = str(result.get("download_url") or "").strip()
@@ -1482,6 +1519,7 @@ class AplicatieOfertare(ctk.CTk):
         if self._version_alert_bar is not None and self._version_alert_bar.winfo_exists():
             self._version_alert_bar.destroy()
 
+        self._pending_update_result = result
         version_cloud = str(result.get("version_cloud") or "").strip()
         download_url = str(result.get("download_url") or "").strip()
         self._version_alert_bar = ctk.CTkFrame(
@@ -1519,7 +1557,7 @@ class AplicatieOfertare(ctk.CTk):
             hover_color="#E65100",
             border_width=1,
             border_color="#333333",
-            command=lambda: self._open_update_link(download_url),
+            command=lambda r=result: self._offer_auto_update_confirm(r),
         ).pack(side="right", padx=(8, 12), pady=6)
         ctk.CTkButton(
             self._version_alert_bar,
@@ -2715,14 +2753,13 @@ class AplicatieOfertare(ctk.CTk):
                 except Exception:
                     pass
                 self._after_id_cautare_clienti = None
+            self._cautare_cancel_pending_row_render()
 
         self.win_cautare.bind("<Destroy>", _on_cautare_destroy)
 
         self._cautare_row_pool = None
         try:
             self.win_cautare.update_idletasks()
-            self.win_cautare.update()
-            time.sleep(0.01)
         except Exception:
             pass
         self._refresh_tabel_clienti_immediate()
@@ -2863,13 +2900,18 @@ class AplicatieOfertare(ctk.CTk):
                     db.cursor, search_term, data_min, utilizator_creat=None
                 )
                 for t in raw:
+                    _id, nume, adresa, tel, nr_oferte = t[0], t[1], t[2], t[3], t[4]
                     rows_out.append(
                         {
-                            "id": t[0],
-                            "nume": t[1],
-                            "adresa": t[2],
-                            "telefon": t[3],
-                            "nr_oferte": t[4],
+                            "id": _id,
+                            "nume": nume,
+                            "adresa": adresa,
+                            "telefon": tel,
+                            "nr_oferte": nr_oferte,
+                            "display_nume": str(nume or "").upper(),
+                            "display_adresa": str(adresa or ""),
+                            "display_tel": str(tel or ""),
+                            "display_nr": str(nr_oferte),
                         }
                     )
             finally:
@@ -2911,6 +2953,7 @@ class AplicatieOfertare(ctk.CTk):
             return
         self._cautare_hide_loading_skeleton(st)
         if err is not None:
+            self._cautare_cancel_pending_row_render()
             self._cautare_client_ids = []
             self._cautare_selected_idx = None
             self._cautare_row_frames = []
@@ -2929,11 +2972,32 @@ class AplicatieOfertare(ctk.CTk):
         tuples = [
             (d["id"], d["nume"], d["adresa"], d["telefon"], d["nr_oferte"]) for d in rows_dicts
         ]
-        self._render_cautare_table_rows(st, tuples)
+        display_rows = [
+            (d["display_nume"], d["display_adresa"], d["display_tel"], d["display_nr"]) for d in rows_dicts
+        ]
+        self._render_cautare_table_rows(st, tuples, display_rows)
         self._schedule_transition_finish(win_c)
 
-    def _render_cautare_table_rows(self, st, date_clienti: list[tuple[Any, ...]]) -> None:
-        """Actualizează tabelul clienți pe firul UI; reutilizează frame-urile din pool (fără destroy)."""
+    def _cautare_cancel_pending_row_render(self) -> None:
+        aid = getattr(self, "_cautare_render_after_id", None)
+        if aid is not None:
+            try:
+                self.after_cancel(aid)
+            except Exception:
+                pass
+        self._cautare_render_after_id = None
+
+    def _render_cautare_table_rows(
+        self,
+        st,
+        date_clienti: list[tuple[Any, ...]],
+        display_rows: list[tuple[str, str, str, str]] | None = None,
+    ) -> None:
+        """Fir UI: pool extins incremental; primele ~12 rânduri imediat, restul cu after(1)."""
+        self._cautare_cancel_pending_row_render()
+        self._cautare_render_gen += 1
+        _render_gen = self._cautare_render_gen
+
         pool = getattr(self, "_cautare_row_pool", None)
         if pool is None:
             self._cautare_row_pool = []
@@ -2951,67 +3015,117 @@ class AplicatieOfertare(ctk.CTk):
         _font_name = ("Segoe UI", 12, "bold")
         _muted = "#9E9E9E"
 
-        while len(pool) < len(date_clienti):
-            row_f = ctk.CTkFrame(
-                st,
-                height=44,
-                fg_color=ROW_LIST_BG,
-                corner_radius=4,
-                border_width=0,
-            )
-            _polish_secondary_frame_surface(row_f, ROW_LIST_BG, border_width=0)
-            row_f.pack_propagate(False)
-            lbl_n = ctk.CTkLabel(row_f, text="", font=_font_name, anchor="w")
-            lbl_n.place(relx=0.02, rely=0.5, anchor="w")
-            lbl_a = ctk.CTkLabel(row_f, text="", font=_font_row, text_color=_muted, anchor="w")
-            lbl_a.place(relx=0.30, rely=0.5, anchor="w")
-            lbl_t = ctk.CTkLabel(row_f, text="", font=_font_row, anchor="w")
-            lbl_t.place(relx=0.58, rely=0.5, anchor="w")
-            lbl_no = ctk.CTkLabel(row_f, text="", font=_font_row, text_color=_muted, anchor="e")
-            lbl_no.place(relx=0.98, rely=0.5, anchor="e")
-            pool.append({"frame": row_f, "lbl_n": lbl_n, "lbl_a": lbl_a, "lbl_t": lbl_t, "lbl_no": lbl_no})
+        n = len(date_clienti)
+        if display_rows is None or len(display_rows) != n:
+            display_rows = [
+                (str(r[1] or "").upper(), str(r[2] or ""), str(r[3] or ""), str(r[4])) for r in date_clienti
+            ]
 
-        self._cautare_row_frames = []
-        for i, r in enumerate(date_clienti):
-            _cid, nume, adresa, tel, nr_oferte = r
-            cell = pool[i]
-            row_f = cell["frame"]
-            cell["lbl_n"].configure(text=str(nume).upper())
-            cell["lbl_a"].configure(text=str(adresa or ""))
-            cell["lbl_t"].configure(text=str(tel or ""))
-            cell["lbl_no"].configure(text=str(nr_oferte))
-            row_f.configure(fg_color=ROW_LIST_BG)
-            _apply_list_row_frame_native_bg(row_f, ROW_LIST_BG)
-            row_f.pack(fill="x", pady=1)
-            self._cautare_row_frames.append(row_f)
-
-            def _bind_cautare_row(idx: int):
-                def _select(_event=None):
-                    self._cautare_set_selected_row(idx)
-
-                def _double(_event=None):
-                    self._cautare_set_selected_row(idx)
-                    self._cautare_action_detalii()
-
-                return _select, _double
-
-            _sel, _dbl = _bind_cautare_row(i)
-            for w in (row_f, cell["lbl_n"], cell["lbl_a"], cell["lbl_t"], cell["lbl_no"]):
-                w.bind("<Button-1>", _sel)
-                w.bind("<Double-Button-1>", _dbl)
-
-        btn = getattr(self, "_cautare_btn_detalii", None)
-        if btn is not None:
+        if n == 0:
+            self._cautare_row_frames = []
+            btn = getattr(self, "_cautare_btn_detalii", None)
+            if btn is not None:
+                try:
+                    if btn.winfo_exists():
+                        btn.configure(state="disabled")
+                except Exception:
+                    pass
             try:
-                if btn.winfo_exists():
-                    btn.configure(state="disabled")
+                st._parent_canvas.yview_moveto(0)
+            except Exception:
+                pass
+            return
+
+        FIRST = 12
+        CHUNK = 12
+        self._cautare_row_frames = []
+
+        def _ensure_cautare_pool(upto: int) -> None:
+            while len(pool) < upto:
+                row_f = ctk.CTkFrame(
+                    st,
+                    height=44,
+                    fg_color=ROW_LIST_BG,
+                    corner_radius=4,
+                    border_width=0,
+                )
+                _polish_secondary_frame_surface(row_f, ROW_LIST_BG, border_width=0)
+                row_f.pack_propagate(False)
+                lbl_n = ctk.CTkLabel(row_f, text="", font=_font_name, anchor="w")
+                lbl_n.place(relx=0.02, rely=0.5, anchor="w")
+                lbl_a = ctk.CTkLabel(row_f, text="", font=_font_row, text_color=_muted, anchor="w")
+                lbl_a.place(relx=0.30, rely=0.5, anchor="w")
+                lbl_t = ctk.CTkLabel(row_f, text="", font=_font_row, anchor="w")
+                lbl_t.place(relx=0.58, rely=0.5, anchor="w")
+                lbl_no = ctk.CTkLabel(row_f, text="", font=_font_row, text_color=_muted, anchor="e")
+                lbl_no.place(relx=0.98, rely=0.5, anchor="e")
+                pool.append({"frame": row_f, "lbl_n": lbl_n, "lbl_a": lbl_a, "lbl_t": lbl_t, "lbl_no": lbl_no})
+
+        def _pack_cautare_range(i0: int, i1: int) -> None:
+            _ensure_cautare_pool(i1)
+            for i in range(i0, i1):
+                dn, da, dt, dno = display_rows[i]
+                cell = pool[i]
+                row_f = cell["frame"]
+                cell["lbl_n"].configure(text=dn)
+                cell["lbl_a"].configure(text=da)
+                cell["lbl_t"].configure(text=dt)
+                cell["lbl_no"].configure(text=dno)
+                row_f.configure(fg_color=ROW_LIST_BG)
+                _apply_list_row_frame_native_bg(row_f, ROW_LIST_BG)
+                row_f.pack(fill="x", pady=1)
+                self._cautare_row_frames.append(row_f)
+
+                def _bind_cautare_row(idx: int):
+                    def _select(_event=None):
+                        self._cautare_set_selected_row(idx)
+
+                    def _double(_event=None):
+                        self._cautare_set_selected_row(idx)
+                        self._cautare_action_detalii()
+
+                    return _select, _double
+
+                _sel, _dbl = _bind_cautare_row(i)
+                for w in (row_f, cell["lbl_n"], cell["lbl_a"], cell["lbl_t"], cell["lbl_no"]):
+                    w.bind("<Button-1>", _sel)
+                    w.bind("<Double-Button-1>", _dbl)
+
+        def _finish_cautare_render() -> None:
+            self._cautare_render_after_id = None
+            btn = getattr(self, "_cautare_btn_detalii", None)
+            if btn is not None:
+                try:
+                    if btn.winfo_exists():
+                        btn.configure(state="disabled")
+                except Exception:
+                    pass
+            try:
+                st._parent_canvas.yview_moveto(0)
+            except Exception:
+                pass
+            try:
+                self.update_idletasks()
             except Exception:
                 pass
 
-        try:
-            st._parent_canvas.yview_moveto(0)
-        except Exception:
-            pass
+        def _do_chunk(start: int) -> None:
+            if _render_gen != self._cautare_render_gen:
+                return
+            try:
+                if not st.winfo_exists():
+                    return
+            except Exception:
+                return
+            step = FIRST if start == 0 else CHUNK
+            end = min(start + step, n)
+            _pack_cautare_range(start, end)
+            if end < n:
+                self._cautare_render_after_id = self.after(1, lambda e=end: _do_chunk(e))
+            else:
+                _finish_cautare_render()
+
+        _do_chunk(0)
 
     def refresh_tabel_clienti(self):
         st = getattr(self, "scroll_tabel", None)
@@ -7056,8 +7170,6 @@ class AplicatieOfertare(ctk.CTk):
             self._istoric_btn_del.pack(side="left", padx=6, pady=8)
         try:
             self.win_istoric.update_idletasks()
-            self.win_istoric.update()
-            time.sleep(0.01)
         except Exception:
             pass
         self.refresh_lista_istoric()
@@ -7269,16 +7381,50 @@ class AplicatieOfertare(ctk.CTk):
                     data_start=data_start,
                     data_end=data_end,
                 )
+                cu = db.cursor
                 for t in raw:
+                    id_o, nume, total_lei, data, det_raw = t[0], t[1], t[2], t[3], t[4]
+                    avans = 1 if (len(t) > 5 and t[5]) else 0
+                    consultant_raw = (t[6] if len(t) > 6 else "") or ""
+                    try:
+                        c_disp = (
+                            get_user_full_name(cu, consultant_raw.strip())
+                            if consultant_raw.strip()
+                            else None
+                        )
+                    except Exception:
+                        c_disp = None
+                    consultant = (c_disp or consultant_raw or "-")[:18]
+                    mod_m = get_offer_modificare_meta(det_raw or "")
+                    if mod_m:
+                        mu = (mod_m[0] or "").strip()
+                        try:
+                            m_disp = get_user_full_name(cu, mu) if mu else None
+                        except Exception:
+                            m_disp = None
+                        who = (m_disp or mu)[:20]
+                        status_text = f"Modificat: {who}" + (" · Avans" if avans else "")
+                    else:
+                        status_text = "Parțial" if avans else "Aștept."
+                    ds = str(data)[:20]
+                    cc = str(consultant)[:18]
+                    nm = str(nume or "").upper()
+                    total_txt = f"{float(total_lei or 0):,.2f} LEI".replace(",", " ")
                     rows_out.append(
                         {
-                            "id": t[0],
-                            "nume_client_temp": t[1],
-                            "total_lei": t[2],
-                            "data_oferta": t[3],
-                            "detalii_oferta": t[4],
-                            "avans_incasat": t[5],
-                            "utilizator_creat": t[6],
+                            "id": id_o,
+                            "nume_client_temp": nume,
+                            "total_lei": total_lei,
+                            "data_oferta": data,
+                            "detalii_oferta": det_raw,
+                            "avans_incasat": t[5] if len(t) > 5 else 0,
+                            "utilizator_creat": consultant_raw,
+                            "display_nume": nm[:32],
+                            "display_data": ds,
+                            "display_cons": cc,
+                            "display_nr": f"#{str(id_o).zfill(5)}",
+                            "display_tot": total_txt,
+                            "display_st": status_text,
                         }
                     )
             finally:
@@ -7320,6 +7466,7 @@ class AplicatieOfertare(ctk.CTk):
             return
         self._istoric_hide_loading_skeleton(list_scroll)
         if err is not None:
+            self._istoric_cancel_pending_row_render()
             self._istoric_row_data = []
             self._istoric_selected_idx = None
             pool = getattr(self, "_istoric_row_pool", None) or []
@@ -7351,11 +7498,40 @@ class AplicatieOfertare(ctk.CTk):
             )
             for d in rows_dicts
         ]
-        self._render_istoric_list_rows(list_scroll, tuples)
+        display_rows = [
+            (
+                d["display_nume"],
+                d["display_data"],
+                d["display_cons"],
+                d["display_nr"],
+                d["display_tot"],
+                d["display_st"],
+            )
+            for d in rows_dicts
+        ]
+        self._render_istoric_list_rows(list_scroll, tuples, display_rows)
         self._schedule_transition_finish(win_ist)
 
-    def _render_istoric_list_rows(self, list_scroll, istoric_rows: list[tuple[Any, ...]]) -> None:
-        """Desenează rândurile de istoric pe firul UI; pool + configure, fără destroy pe rânduri."""
+    def _istoric_cancel_pending_row_render(self) -> None:
+        aid = getattr(self, "_istoric_render_after_id", None)
+        if aid is not None:
+            try:
+                self.after_cancel(aid)
+            except Exception:
+                pass
+        self._istoric_render_after_id = None
+
+    def _render_istoric_list_rows(
+        self,
+        list_scroll,
+        istoric_rows: list[tuple[Any, ...]],
+        display_rows: list[tuple[str, str, str, str, str, str]] | None = None,
+    ) -> None:
+        """Fir UI: pool extins incremental; texte preformatate din worker; loturi cu after(1)."""
+        self._istoric_cancel_pending_row_render()
+        self._istoric_render_gen += 1
+        _render_gen = self._istoric_render_gen
+
         self._istoric_row_data = list(istoric_rows)
         self._istoric_selected_idx = None
 
@@ -7375,6 +7551,30 @@ class AplicatieOfertare(ctk.CTk):
         _font_name = ("Segoe UI", 12, "bold")
         _muted = "#9E9E9E"
 
+        n = len(istoric_rows)
+        if display_rows is None or len(display_rows) != n:
+            display_rows = []
+            for r in istoric_rows:
+                id_o, nume, total_lei, data, det_raw = r[0], r[1], r[2], r[3], r[4]
+                avans = 1 if (len(r) > 5 and r[5]) else 0
+                cr = (r[6] if len(r) > 6 else "") or ""
+                mod_m = get_offer_modificare_meta(det_raw or "")
+                if mod_m:
+                    who = (mod_m[0] or "").strip()[:20]
+                    st = f"Modificat: {who}" + (" · Avans" if avans else "")
+                else:
+                    st = "Parțial" if avans else "Aștept."
+                display_rows.append(
+                    (
+                        str(nume or "").upper()[:32],
+                        str(data)[:20],
+                        str(cr)[:18],
+                        f"#{str(id_o).zfill(5)}",
+                        f"{float(total_lei or 0):,.2f} LEI".replace(",", " "),
+                        st,
+                    )
+                )
+
         if not istoric_rows:
             ph = self._istoric_ensure_empty_placeholder(list_scroll)
             ph.configure(text="Nicio ofertă găsită pentru filtrele curente.", text_color=_muted)
@@ -7387,113 +7587,114 @@ class AplicatieOfertare(ctk.CTk):
             self._on_istoric_listbox_select()
             return
 
-        while len(pool) < len(istoric_rows):
-            row_f = ctk.CTkFrame(
-                list_scroll,
-                height=44,
-                fg_color=ROW_LIST_BG,
-                corner_radius=4,
-                border_width=0,
-            )
-            _polish_secondary_frame_surface(row_f, ROW_LIST_BG, border_width=0)
-            row_f.pack_propagate(False)
-            lbl_nume = ctk.CTkLabel(row_f, text="", font=_font_name, anchor="w")
-            lbl_nume.place(relx=0.02, rely=0.5, anchor="w")
-            lbl_data = ctk.CTkLabel(row_f, text="", font=_font_row, text_color=_muted, anchor="w")
-            lbl_data.place(relx=0.28, rely=0.5, anchor="w")
-            lbl_cons = ctk.CTkLabel(row_f, text="", font=_font_row, text_color=_muted, anchor="w")
-            lbl_cons.place(relx=0.46, rely=0.5, anchor="w")
-            lbl_nr = ctk.CTkLabel(row_f, text="", font=_font_row, text_color=_muted, anchor="w")
-            lbl_nr.place(relx=0.62, rely=0.5, anchor="w")
-            lbl_tot = ctk.CTkLabel(row_f, text="", font=_font_row, anchor="w")
-            lbl_tot.place(relx=0.72, rely=0.5, anchor="w")
-            lbl_st = ctk.CTkLabel(row_f, text="", font=_font_row, text_color=_muted, anchor="e")
-            lbl_st.place(relx=0.98, rely=0.5, anchor="e")
-            pool.append(
-                {
-                    "frame": row_f,
-                    "lbl_nume": lbl_nume,
-                    "lbl_data": lbl_data,
-                    "lbl_cons": lbl_cons,
-                    "lbl_nr": lbl_nr,
-                    "lbl_tot": lbl_tot,
-                    "lbl_st": lbl_st,
-                }
-            )
-
+        FIRST = 12
+        CHUNK = 12
         self._istoric_row_frames = []
-        for i, r in enumerate(istoric_rows):
-            id_o, nume, total_lei, data, det_raw = r[0], r[1], r[2], r[3], r[4]
-            avans = 1 if (len(r) > 5 and r[5]) else 0
-            consultant_raw = (r[6] if len(r) > 6 else "") or ""
-            try:
-                c_disp = (
-                    get_user_full_name(self.cursor, consultant_raw.strip())
-                    if consultant_raw.strip()
-                    else None
+
+        def _ensure_istoric_pool(upto: int) -> None:
+            while len(pool) < upto:
+                row_f = ctk.CTkFrame(
+                    list_scroll,
+                    height=44,
+                    fg_color=ROW_LIST_BG,
+                    corner_radius=4,
+                    border_width=0,
                 )
+                _polish_secondary_frame_surface(row_f, ROW_LIST_BG, border_width=0)
+                row_f.pack_propagate(False)
+                lbl_nume = ctk.CTkLabel(row_f, text="", font=_font_name, anchor="w")
+                lbl_nume.place(relx=0.02, rely=0.5, anchor="w")
+                lbl_data = ctk.CTkLabel(row_f, text="", font=_font_row, text_color=_muted, anchor="w")
+                lbl_data.place(relx=0.28, rely=0.5, anchor="w")
+                lbl_cons = ctk.CTkLabel(row_f, text="", font=_font_row, text_color=_muted, anchor="w")
+                lbl_cons.place(relx=0.46, rely=0.5, anchor="w")
+                lbl_nr = ctk.CTkLabel(row_f, text="", font=_font_row, text_color=_muted, anchor="w")
+                lbl_nr.place(relx=0.62, rely=0.5, anchor="w")
+                lbl_tot = ctk.CTkLabel(row_f, text="", font=_font_row, anchor="w")
+                lbl_tot.place(relx=0.72, rely=0.5, anchor="w")
+                lbl_st = ctk.CTkLabel(row_f, text="", font=_font_row, text_color=_muted, anchor="e")
+                lbl_st.place(relx=0.98, rely=0.5, anchor="e")
+                pool.append(
+                    {
+                        "frame": row_f,
+                        "lbl_nume": lbl_nume,
+                        "lbl_data": lbl_data,
+                        "lbl_cons": lbl_cons,
+                        "lbl_nr": lbl_nr,
+                        "lbl_tot": lbl_tot,
+                        "lbl_st": lbl_st,
+                    }
+                )
+
+        def _pack_istoric_range(i0: int, i1: int) -> None:
+            _ensure_istoric_pool(i1)
+            for i in range(i0, i1):
+                nm, ds, cc, nr_disp, total_txt, status_text = display_rows[i]
+                cell = pool[i]
+                row_f = cell["frame"]
+                cell["lbl_nume"].configure(text=nm)
+                cell["lbl_data"].configure(text=ds)
+                cell["lbl_cons"].configure(text=cc)
+                cell["lbl_nr"].configure(text=nr_disp)
+                cell["lbl_tot"].configure(text=total_txt)
+                cell["lbl_st"].configure(text=status_text)
+                row_f.configure(fg_color=ROW_LIST_BG)
+                _apply_list_row_frame_native_bg(row_f, ROW_LIST_BG)
+                row_f.pack(fill="x", pady=1)
+                self._istoric_row_frames.append(row_f)
+
+                def _bind_row_select(idx: int):
+                    def _select(_event=None):
+                        self._istoric_set_selected_row(idx)
+
+                    def _double(_event=None):
+                        self._istoric_set_selected_row(idx)
+                        self._istoric_action_deschide()
+
+                    return _select, _double
+
+                _sel, _dbl = _bind_row_select(i)
+                for w in (
+                    row_f,
+                    cell["lbl_nume"],
+                    cell["lbl_data"],
+                    cell["lbl_cons"],
+                    cell["lbl_nr"],
+                    cell["lbl_tot"],
+                    cell["lbl_st"],
+                ):
+                    w.bind("<Button-1>", _sel)
+                    w.bind("<Double-Button-1>", _dbl)
+
+        def _finish_istoric_render() -> None:
+            self._istoric_render_after_id = None
+            try:
+                list_scroll._parent_canvas.yview_moveto(0)
             except Exception:
-                c_disp = None
-            consultant = (c_disp or consultant_raw or "-")[:18]
-            nr_inreg = str(id_o).zfill(5)
-            mod_m = get_offer_modificare_meta(det_raw or "")
-            if mod_m:
-                mu = (mod_m[0] or "").strip()
-                try:
-                    m_disp = get_user_full_name(self.cursor, mu) if mu else None
-                except Exception:
-                    m_disp = None
-                who = (m_disp or mu)[:20]
-                status_text = f"Modificat: {who}" + (" · Avans" if avans else "")
+                pass
+            self._on_istoric_listbox_select()
+            try:
+                self.update_idletasks()
+            except Exception:
+                pass
+
+        def _do_chunk(start: int) -> None:
+            if _render_gen != self._istoric_render_gen:
+                return
+            try:
+                if not list_scroll.winfo_exists():
+                    return
+            except Exception:
+                return
+            step = FIRST if start == 0 else CHUNK
+            end = min(start + step, n)
+            _pack_istoric_range(start, end)
+            if end < n:
+                self._istoric_render_after_id = self.after(1, lambda e=end: _do_chunk(e))
             else:
-                status_text = "Parțial" if avans else "Aștept."
-            ds = str(data)[:20]
-            cc = str(consultant)[:18]
-            nm = str(nume or "").upper()
-            total_txt = f"{float(total_lei or 0):,.2f} LEI".replace(",", " ")
+                _finish_istoric_render()
 
-            cell = pool[i]
-            row_f = cell["frame"]
-            cell["lbl_nume"].configure(text=nm[:32])
-            cell["lbl_data"].configure(text=ds)
-            cell["lbl_cons"].configure(text=cc)
-            cell["lbl_nr"].configure(text=f"#{nr_inreg}")
-            cell["lbl_tot"].configure(text=total_txt)
-            cell["lbl_st"].configure(text=status_text)
-            row_f.configure(fg_color=ROW_LIST_BG)
-            _apply_list_row_frame_native_bg(row_f, ROW_LIST_BG)
-            row_f.pack(fill="x", pady=1)
-            self._istoric_row_frames.append(row_f)
-
-            def _bind_row_select(idx: int):
-                def _select(_event=None):
-                    self._istoric_set_selected_row(idx)
-
-                def _double(_event=None):
-                    self._istoric_set_selected_row(idx)
-                    self._istoric_action_deschide()
-
-                return _select, _double
-
-            _sel, _dbl = _bind_row_select(i)
-            for w in (
-                row_f,
-                cell["lbl_nume"],
-                cell["lbl_data"],
-                cell["lbl_cons"],
-                cell["lbl_nr"],
-                cell["lbl_tot"],
-                cell["lbl_st"],
-            ):
-                w.bind("<Button-1>", _sel)
-                w.bind("<Double-Button-1>", _dbl)
-
-        try:
-            list_scroll._parent_canvas.yview_moveto(0)
-        except Exception:
-            pass
-
-        self._on_istoric_listbox_select()
+        _do_chunk(0)
 
     def refresh_lista_istoric(self):
         list_scroll = getattr(self, "_istoric_list_scroll", None)
