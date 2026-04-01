@@ -851,6 +851,40 @@ def get_modele_produse(cursor, categorie: str, furnizor: str, colectie_or_tip_to
     return [x for x in sorted({str(r.get("model") or "") for r in rows if str(r.get("colectie") or "") == colectie_or_tip_toc})]
 
 
+def get_finisaje_produse(cursor, categorie: str, furnizor: str, colectie: str):
+    rows = [
+        r for r in _produse()
+        if str(r.get("categorie") or "") == categorie
+        and str(r.get("furnizor") or "") == furnizor
+        and str(r.get("colectie") or "") == colectie
+    ]
+    return [x for x in sorted({str(r.get("finisaj") or "").strip() for r in rows if str(r.get("finisaj") or "").strip()})]
+
+
+def get_modele_produse_by_finisaj(cursor, categorie: str, furnizor: str, colectie: str, finisaj: str):
+    rows = [
+        r for r in _produse()
+        if str(r.get("categorie") or "") == categorie
+        and str(r.get("furnizor") or "") == furnizor
+        and str(r.get("colectie") or "") == colectie
+        and str(r.get("finisaj") or "").strip().lower() == str(finisaj or "").strip().lower()
+    ]
+    return [x for x in sorted({str(r.get("model") or "").strip() for r in rows if str(r.get("model") or "").strip()})]
+
+
+def get_pret_model_finisaj(cursor, categorie: str, furnizor: str, colectie: str, model: str, finisaj: str):
+    for r in _produse():
+        if (
+            str(r.get("categorie") or "") == categorie
+            and str(r.get("furnizor") or "") == furnizor
+            and str(r.get("colectie") or "") == colectie
+            and str(r.get("model") or "").strip() == str(model or "").strip()
+            and str(r.get("finisaj") or "").strip().lower() == str(finisaj or "").strip().lower()
+        ):
+            return (r.get("pret"),)
+    return None
+
+
 def get_pret_tocuri(cursor, categorie: str, furnizor: str, tip_toc: str, dimensiune: str):
     for r in _produse():
         if str(r.get("categorie") or "") == categorie and str(r.get("furnizor") or "") == furnizor and str(r.get("tip_toc") or "") == tip_toc and str(r.get("dimensiune") or "") == (dimensiune or ""):

@@ -46,14 +46,17 @@ from .db import (
     get_istoric_oferte,
     get_modele_parchet,
     get_modele_produse,
+    get_modele_produse_by_finisaj,
     get_offers_by_client,
     get_offer_by_id,
+    get_finisaje_produse,
     get_parchet_dimensiune_pret,
     get_finisaje_tocuri,
     get_decor_finisaj_pairs_tocuri,
     get_pret_tocuri_finisaj,
     get_pret_tocuri_decor_finisaj,
     get_pret_decor_finisaj,
+    get_pret_model_finisaj,
     get_pret_tocuri,
     get_user_contact_phone,
     get_user_for_login,
@@ -4908,8 +4911,20 @@ class AplicatieOfertare(ctk.CTk):
             if furnizor == "Enger":
                 self._manere_engs_reset_and_populate()
                 return
+        w["_toc_tip_display_to_raw"] = {}
         use_tip_toc = titlu == "Tocuri"
         cols = get_colectii_produse(self.cursor, titlu, furnizor, use_tip_toc=use_tip_toc)
+        if titlu == "Tocuri" and furnizor == "Erkado":
+            mapped_cols = []
+            display_to_raw: dict[str, str] = {}
+            for raw in cols:
+                raw_s = (raw or "").strip()
+                display = "Toc Reglabil Usi Cu Falt" if raw_s.lower() == "reglabil" else raw_s
+                if display and display not in display_to_raw:
+                    display_to_raw[display] = raw_s
+                    mapped_cols.append(display)
+            cols = mapped_cols
+            w["_toc_tip_display_to_raw"] = display_to_raw
         if cols:
             valori = cols
         else:
@@ -5080,7 +5095,25 @@ class AplicatieOfertare(ctk.CTk):
             var_manere = self.config_widgets[titlu].get("furnizor_manere")
             furnizor = var_manere.get() if var_manere else "Stoc"
         if titlu == "Tocuri":
+            col = self.config_widgets[titlu].get("_toc_tip_display_to_raw", {}).get(col, col)
             self.config_widgets[titlu]["_tip_toc"] = col
+        if titlu == "Usi Interior" and furnizor == "Erkado":
+            w = self.config_widgets[titlu]
+            ph_fin = "Alege Finisaj"
+            ph_model = "Alege Model"
+            w["_ph_model"] = ph_fin
+            w["_ph_decor"] = ph_model
+            finisaje = get_finisaje_produse(self.cursor, titlu, furnizor, col)
+            w["model_all"] = list(finisaje)
+            w["model"].configure(state="normal", values=finisaje)
+            w["model"].set(ph_fin)
+            w["decor_all"] = []
+            w["decor"].configure(state="disabled", values=[])
+            w["decor"].set(ph_model)
+            w["pret_val"] = 0.0
+            w["pret_display"].configure(text="Preț: —")
+            w["buton"].configure(state="disabled")
+            return
         modele = get_modele_produse(
             self.cursor, titlu, furnizor, col,
             use_tip_toc=(titlu == "Tocuri"),
@@ -5120,6 +5153,29 @@ class AplicatieOfertare(ctk.CTk):
             if furnizor == "Enger":
                 self._manere_engs_on_model_select()
                 return
+        if titlu == "Tocuri":
+            col = self.config_widgets[titlu].get("_toc_tip_display_to_raw", {}).get(col, col)
+        if titlu == "Usi Interior" and furnizor == "Erkado":
+            w = self.config_widgets[titlu]
+            finisaj = (mod or "").strip()
+            ph_fin = w.get("_ph_model") or "Alege Finisaj"
+            ph_model = w.get("_ph_decor") or "Alege Model"
+            if not finisaj or finisaj == ph_fin:
+                w["decor_all"] = []
+                w["decor"].configure(state="disabled", values=[])
+                w["decor"].set(ph_model)
+                w["pret_val"] = 0.0
+                w["pret_display"].configure(text="Preț: —")
+                w["buton"].configure(state="disabled")
+                return
+            modele = get_modele_produse_by_finisaj(self.cursor, titlu, furnizor, col, finisaj)
+            w["decor_all"] = list(modele)
+            w["decor"].configure(state="normal", values=modele)
+            w["decor"].set(ph_model)
+            w["pret_val"] = 0.0
+            w["pret_display"].configure(text="Preț: —")
+            w["buton"].configure(state="disabled")
+            return
         if titlu in self.CATEGORII_PARCHET:
             mod = (mod or "").strip()
             mod_int = None
@@ -5215,7 +5271,14 @@ class AplicatieOfertare(ctk.CTk):
                     sample_trim = self.cursor.fetchall()
                 except Exception:
                     pass
-            values = [f"{d} / {f}" if d else f for d, f in pairs]
+            values = []
+            for d, f in pairs:
+                d_clean = (d or "").strip()
+                f_clean = (f or "").strip()
+                # Nu afișăm prefixul tehnic "TEXT" în selector.
+                if d_clean.lower() == "text":
+                    d_clean = ""
+                values.append(f"{d_clean} / {f_clean}" if d_clean else f_clean)
             w["decor_finisaj_pairs"] = pairs
             w["decor_all"] = list(values)
             w["decor"].configure(state="normal", values=values)
@@ -5287,6 +5350,7 @@ class AplicatieOfertare(ctk.CTk):
 
         if titlu == "Tocuri":
             w = self.config_widgets[titlu]
+            col = w.get("_toc_tip_display_to_raw", {}).get(col, col)
             tip_toc = col
             dimensiune = mod or ""
             if furnizor == "Stoc":
@@ -5344,6 +5408,29 @@ class AplicatieOfertare(ctk.CTk):
                 w["pret_val"] = 0
                 w["pret_display"].configure(text="Preț: —")
                 w["buton"].configure(state="disabled")
+            return
+        if titlu == "Usi Interior" and furnizor == "Erkado":
+            wcfg = self.config_widgets[titlu]
+            ph_fin = wcfg.get("_ph_model") or "Alege Finisaj"
+            ph_model = wcfg.get("_ph_decor") or "Alege Model"
+            finisaj = (mod or "").strip()
+            model = (sel or "").strip()
+            if not finisaj or finisaj == ph_fin or not model or model == ph_model:
+                wcfg["pret_val"] = 0.0
+                wcfg["pret_display"].configure(text="Preț: —")
+                wcfg["buton"].configure(state="disabled")
+                return
+            res = get_pret_model_finisaj(self.cursor, titlu, furnizor, col, model, finisaj)
+            if res:
+                wcfg["pret_val"] = res[0]
+                wcfg["pret_display"].configure(text=f"Preț: {res[0]} €")
+                wcfg["buton"].configure(
+                    state="normal", command=lambda t=titlu: self.adauga_in_cos_config(t)
+                )
+            else:
+                wcfg["pret_val"] = 0.0
+                wcfg["pret_display"].configure(text="Preț: —")
+                wcfg["buton"].configure(state="disabled")
             return
 
         wcfg = self.config_widgets[titlu]
@@ -6330,11 +6417,14 @@ class AplicatieOfertare(ctk.CTk):
                 usa_finisaj_sel = sel
             # Erkado: în listă/PDF afișăm decorul (text) + finisajul din listă (CPL, PREMIUM, GREKO, …)
             if furnizor == "Erkado":
-                fin_e = (usa_finisaj_sel or "").strip()
+                model_erk = (w["decor"].get() or "").strip()
+                fin_e = (w["model"].get() or "").strip()
+                usa_finisaj_sel = fin_e
+                usa_decor_sel = dec_display
                 if fin_e:
-                    nume = f"Usa {w['colectie'].get()} {w['model'].get()} ({dec_display} / {fin_e})"
+                    nume = f"Usa {w['colectie'].get()} {model_erk} ({dec_display} / {fin_e})"
                 else:
-                    nume = f"Usa {w['colectie'].get()} {w['model'].get()} ({dec_display})"
+                    nume = f"Usa {w['colectie'].get()} {model_erk} ({dec_display})"
             else:
                 nume = f"Usa {w['colectie'].get()} {w['model'].get()} ({dec_display})"
             self.cos_cumparaturi.append(
@@ -6370,11 +6460,15 @@ class AplicatieOfertare(ctk.CTk):
                         dec_display = w["decor"].get()
                         self.on_decor_select("Tocuri")
 
-            parte_toc = f"Toc {tip_toc} Drept {dim}" if (tip_toc and dim) else "Toc"
+            tip_norm = (tip_toc or "").strip().lower()
+            if "reglabil" in tip_norm:
+                parte_toc = f"Toc Reglabil {dim}".strip()
+            else:
+                parte_toc = f"Toc {tip_toc} Drept {dim}" if (tip_toc and dim) else "Toc"
             toc_display = w["decor"].get()
             toc_decor = ""
             toc_finisaj = toc_display
-            if furnizor == "Stoc":
+            if furnizor in ("Stoc", "Erkado"):
                 usi_match = [
                     i
                     for i in self.cos_cumparaturi
@@ -6390,7 +6484,9 @@ class AplicatieOfertare(ctk.CTk):
                     usa_item = usi_match[idx_next]
                     toc_decor = (usa_item.get("usa_decor") or usa_item.get("usa_decor_display") or "").strip()
                     toc_finisaj = (usa_item.get("usa_finisaj") or "").strip()
-                    if toc_decor and toc_finisaj:
+                    if furnizor == "Erkado":
+                        toc_display = toc_decor or "—"
+                    elif toc_decor and toc_finisaj:
                         toc_display = f"{toc_decor} / {toc_finisaj}"
                     else:
                         toc_display = toc_decor or toc_finisaj or "Automat din usa"
@@ -6401,7 +6497,10 @@ class AplicatieOfertare(ctk.CTk):
                 toc_decor, toc_finisaj = pairs[idx]
             except (ValueError, IndexError):
                 pass
-            nume = f"{parte_toc} ({toc_display})"
+            if furnizor == "Erkado" and "reglabil" in tip_norm:
+                nume = f"{parte_toc} {toc_display}".strip()
+            else:
+                nume = f"{parte_toc} ({toc_display})"
             # Adăugăm întotdeauna toc normal; opțiunea „Toc Tunel” se poate activa ulterior din coș
             self.cos_cumparaturi.append(
                 {
