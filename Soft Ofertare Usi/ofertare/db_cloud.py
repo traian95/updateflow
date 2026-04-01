@@ -1149,3 +1149,12 @@ def get_oferte_by_date(cursor, data_prefix: str):
     rows = [o for o in _rows(TABLE_OFERTE) if str(o.get("data_oferta") or "").startswith(data_prefix)]
     rows.sort(key=lambda r: int(r.get("id") or 0))
     return [(o.get("id"), o.get("nume_client_temp") or "", o.get("total_lei") or 0, o.get("detalii_oferta") or "") for o in rows]
+
+
+# —— Uși exterior (prețuri în Supabase) ——
+TABLE_USI_EXTERIOARE = "usi_exterioare"
+
+
+def get_usi_exterioare_rows(*, force: bool = False) -> list[dict[str, Any]]:
+    """Rânduri din `usi_exterioare` (model, prețuri și dimensiuni pentru configurator)."""
+    return _rows(TABLE_USI_EXTERIOARE, force=force)

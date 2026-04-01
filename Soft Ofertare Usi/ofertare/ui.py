@@ -28,7 +28,12 @@ from tkinter import filedialog
 
 from .auth_utils import hash_parola as _hash_parola
 from .config import AppConfig, BNR_TIMEOUT_S, PDF_CONTACT_EMAIL, PDF_CONTACT_TEL, get_database_path
-from .db_cloud import get_manere_engs_finisaje, get_manere_engs_modele, get_manere_engs_pret_lei
+from .db_cloud import (
+    get_manere_engs_finisaje,
+    get_manere_engs_modele,
+    get_manere_engs_pret_lei,
+    get_usi_exterioare_rows,
+)
 from .db import (
     DbHandles,
     TABLE_CLIENTI,
@@ -207,6 +212,10 @@ AMBER_CORP = "#F57C00"
 AMBER_HOVER = "#E65100"
 BORDER_GRAY = "#444444"
 INPUT_BORDER_GRAY = "#444444"
+
+# Uși exterior: profil de cuplare scăzut din dimensiunile nominale (mm), ca în specificațiile tehnice.
+USI_EXTERIOR_COUPLING_MM = 60
+USI_EXTERIOR_TOC_LABELS = ("THERMO 64", "THERMO 78", "THERMO HOT 78", "THERMO HOT 88")
 RADIO_ACCENT = "#546E7A"
 RADIO_ACCENT_HOVER = "#455A64"
 
@@ -3552,7 +3561,7 @@ class AplicatieOfertare(ctk.CTk):
         f_selectie.pack_propagate(False)
 
         f_global_filter = ctk.CTkFrame(
-            f_selectie, fg_color="#2D2D2D", bg_color=CORP_FRAME_BG, height=72, corner_radius=OFERTA_WIDGET_RADIUS
+            f_selectie, fg_color="#2D2D2D", bg_color=CORP_FRAME_BG, height=106, corner_radius=OFERTA_WIDGET_RADIUS
         )
         f_global_filter.pack(fill="x", padx=10, pady=(20, 10))
         f_global_filter.pack_propagate(False)
@@ -3561,31 +3570,42 @@ class AplicatieOfertare(ctk.CTk):
             text="Alege furnizorul de ofertă:",
             font=("Segoe UI", 12),
             text_color="#2E7D32",
-        ).pack(side="left", padx=10)
+        ).pack(anchor="w", padx=10, pady=(8, 4))
         self.var_furnizor_global = ctk.StringVar(value="Stoc")
-        rb_stoc = ctk.CTkRadioButton(
-            f_global_filter, text="STOC", variable=self.var_furnizor_global, value="Stoc",
-            command=self.switch_catalog_global, font=("Segoe UI", 11),
+        f_furnizori_buttons = ctk.CTkFrame(f_global_filter, fg_color="transparent")
+        f_furnizori_buttons.pack(fill="x", padx=8, pady=(0, 8))
+        button_common = dict(
+            height=32,
+            font=("Segoe UI", 11),
+            fg_color="#2E7D32",
+            hover_color="#256A2A",
+            text_color="#ECEFF1",
+            corner_radius=OFERTA_WIDGET_RADIUS,
         )
-        rb_erkado = ctk.CTkRadioButton(
-            f_global_filter, text="ERKADO", variable=self.var_furnizor_global, value="Erkado",
-            command=self.switch_catalog_global, font=("Segoe UI", 11),
+        btn_stoc = ctk.CTkButton(
+            f_furnizori_buttons, text="STOC", width=90,
+            command=lambda: self._set_furnizor_global("Stoc"), **button_common
         )
-        rb_stoc.pack(side="left", padx=5)
-        rb_erkado.pack(side="left", padx=5)
-        self._style_corporate_radio(rb_stoc)
-        self._style_corporate_radio(rb_erkado)
-        if not readonly:
-            btn_parchet = ctk.CTkButton(
-                f_global_filter, text="PARCHET", width=140, height=32,
-                font=("Segoe UI", 11),
-                fg_color=CORP_MATT_GREY,
-                hover_color="#454545",
-                text_color="#ECEFF1",
-                corner_radius=OFERTA_WIDGET_RADIUS,
-                command=self._deschide_popup_parchet,
-            )
-            btn_parchet.pack(side="right", padx=(6, 6))
+        btn_erkado = ctk.CTkButton(
+            f_furnizori_buttons, text="ERKADO", width=90,
+            command=lambda: self._set_furnizor_global("Erkado"), **button_common
+        )
+        btn_parchet = ctk.CTkButton(
+            f_furnizori_buttons, text="PARCHET", width=110,
+            command=self._deschide_popup_parchet, **button_common
+        )
+        btn_usi_exterior = ctk.CTkButton(
+            f_furnizori_buttons, text="USI EXTERIOR", width=130,
+            command=self._deschide_configurator_usi_exterior, **button_common
+        )
+        btn_stoc.pack(side="left", padx=(2, 4))
+        btn_erkado.pack(side="left", padx=4)
+        btn_parchet.pack(side="left", padx=4)
+        btn_usi_exterior.pack(side="left", padx=4)
+        self._furnizor_global_buttons = {"Stoc": btn_stoc, "Erkado": btn_erkado}
+        self._update_furnizor_global_buttons_ui()
+        if readonly:
+            btn_parchet.configure(state="disabled")
 
         # Zone derulabile: categorii + servicii suplimentare (ca să fie mereu accesibile)
         scroll_selectie = ctk.CTkScrollableFrame(
@@ -3765,6 +3785,17 @@ class AplicatieOfertare(ctk.CTk):
         )
         _force_ctk_native_dark_bg(self.f_cos, CORP_FRAME_BG)
         self.f_cos.pack(side="right", fill="both", padx=(4, 0))
+        self._frame_usi_exterior_host = ctk.CTkFrame(
+            main_layout,
+            width=1380,
+            fg_color=CORP_FRAME_BG,
+            bg_color=OFERTA_WINDOW_BG,
+            corner_radius=OFERTA_WIDGET_RADIUS,
+            border_width=1,
+            border_color=BORDER_GRAY,
+        )
+        _force_ctk_native_dark_bg(self._frame_usi_exterior_host, CORP_FRAME_BG)
+        self._usi_exterior_panel_built = False
         self.tabview_cos = ctk.CTkTabview(
             self.f_cos, width=980, corner_radius=OFERTA_WIDGET_RADIUS, fg_color=CORP_FRAME_BG
         )
@@ -4104,6 +4135,736 @@ class AplicatieOfertare(ctk.CTk):
         for titlu in self.config_widgets:
             self.populeaza_colectii(titlu)
         self._update_erkado_decor_text_visibility()
+        self._update_furnizor_global_buttons_ui()
+
+    def _set_furnizor_global(self, furnizor: str) -> None:
+        if not hasattr(self, "var_furnizor_global"):
+            return
+        self.var_furnizor_global.set(furnizor)
+        self.switch_catalog_global()
+
+    def _update_furnizor_global_buttons_ui(self) -> None:
+        buttons = getattr(self, "_furnizor_global_buttons", None)
+        if not buttons:
+            return
+        selected = self.var_furnizor_global.get() if hasattr(self, "var_furnizor_global") else "Stoc"
+        for key, btn in buttons.items():
+            if key == selected:
+                btn.configure(fg_color="#1B5E20", hover_color="#154C19")
+            else:
+                btn.configure(fg_color="#2E7D32", hover_color="#256A2A")
+
+    @staticmethod
+    def _usi_ext_float_from_row(row: dict, keys: tuple[str, ...]) -> float | None:
+        for k in keys:
+            if k not in row or row[k] is None:
+                continue
+            try:
+                return float(row[k])
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _usi_ext_pret_baza_model(self, row: dict | None) -> float:
+        if not row:
+            return 0.0
+        v = self._usi_ext_float_from_row(
+            row,
+            ("pret_baza", "pret_baza_eur", "pret_lista", "pret", "pret_eur", "pret_model", "pret_eur_lista"),
+        )
+        return float(v or 0.0)
+
+    def _usi_ext_pret_adaos_toc(self, row: dict | None) -> float:
+        if not row:
+            return 0.0
+        v = self._usi_ext_float_from_row(
+            row,
+            ("pret_adaos", "pret_adaos_toc", "adaos", "pret_aditional", "pret_supplement", "pret"),
+        )
+        return float(v or 0.0)
+
+    def _usi_ext_pret_toc_from_model_row(self, row: dict | None, toc_label: str) -> float | None:
+        """Caută adaos/preț toc în coloane dedicate din `usi_exterioare`."""
+        if not row:
+            return None
+        toc_norm = toc_label.strip().lower().replace(" ", "_")
+        key_sets = {
+            "thermo_64": ("pret_thermo_64", "thermo_64", "toc_thermo_64", "pret_toc_thermo_64"),
+            "thermo_78": ("pret_thermo_78", "thermo_78", "toc_thermo_78", "pret_toc_thermo_78"),
+            "thermo_hot_78": (
+                "pret_thermo_hot_78",
+                "thermo_hot_78",
+                "toc_thermo_hot_78",
+                "pret_toc_thermo_hot_78",
+                "pret_hot_78",
+                "hot_78",
+                "toc_hot_78",
+                "pret_toc_hot_78",
+            ),
+            "thermo_hot_88": (
+                "pret_thermo_hot_88",
+                "thermo_hot_88",
+                "toc_thermo_hot_88",
+                "pret_toc_thermo_hot_88",
+                "pret_hot_88",
+                "hot_88",
+                "toc_hot_88",
+                "pret_toc_hot_88",
+                "pret_thermo_88",
+                "thermo_88",
+                "toc_thermo_88",
+                "pret_toc_thermo_88",
+            ),
+        }
+        keys = key_sets.get(toc_norm, ())
+        return self._usi_ext_float_from_row(row, keys) if keys else None
+
+    def _usi_ext_find_model_toc_row(self, rows: list[dict], model_label: str, toc_label: str) -> dict | None:
+        """Fallback: caută rând model + tip_toc în `usi_exterioare`."""
+        model_norm = model_label.strip().lower()
+        toc_norm = toc_label.strip().lower().replace(" ", "")
+        for r in rows:
+            m = str(r.get("model") or r.get("denumire") or r.get("nume") or r.get("cod") or "").strip().lower()
+            if m != model_norm:
+                continue
+            t = str(r.get("tip_toc") or r.get("toc") or r.get("tip") or r.get("toc_tip") or "").strip().lower().replace(" ", "")
+            if t and (toc_norm in t or t in toc_norm):
+                return r
+        return None
+
+    @staticmethod
+    def _smart_model_match_score(query: str, label: str) -> int | None:
+        q = (query or "").strip().lower()
+        l = (label or "").strip().lower()
+        if not q:
+            return 0
+        if l == q:
+            return 100
+        if l.startswith(q):
+            return 80
+        if q in l:
+            return 60
+        # Subsecvență (caractere în ordine, nu neapărat consecutive) = filtrare "inteligentă".
+        it = iter(l)
+        if all(ch in it for ch in q):
+            return 40
+        return None
+
+    def _on_usi_exterior_model_keyrelease(self, event=None) -> None:
+        w = getattr(self, "_usi_exterior_widgets", None)
+        if not w:
+            return
+        cb = w.get("cb_model")
+        if cb is None:
+            return
+        query = ""
+        try:
+            if event is not None and hasattr(event, "widget"):
+                query = (event.widget.get() or "").strip()
+        except Exception:
+            query = ""
+        if not query:
+            query = (cb.get() or "").strip()
+        all_labels = list(getattr(self, "_usi_exterior_model_labels", []))
+        scored: list[tuple[int, str]] = []
+        for label in all_labels:
+            s = self._smart_model_match_score(query, label)
+            if s is not None:
+                scored.append((s, label))
+        scored.sort(key=lambda x: (-x[0], x[1].lower()))
+        filtered = [x[1] for x in scored] if query else all_labels
+        if not filtered:
+            filtered = ["(Niciun model găsit)"]
+        self._usi_exterior_model_filtered_labels = filtered
+        cb.configure(values=filtered)
+        # Păstrăm textul tastat; selecția automată doar la match exact.
+        if query:
+            exact = next((x for x in filtered if x.lower() == query.lower()), None)
+            if exact:
+                cb.set(exact)
+                self._on_usi_exterior_selection_change()
+
+    def _on_usi_exterior_model_mousewheel(self, event) -> str | None:
+        w = getattr(self, "_usi_exterior_widgets", None)
+        if not w:
+            return None
+        cb = w.get("cb_model")
+        if cb is None:
+            return None
+        values = list(getattr(self, "_usi_exterior_model_filtered_labels", None) or cb.cget("values") or [])
+        values = [v for v in values if v and not str(v).startswith("(")]
+        if not values:
+            return "break"
+        current = (cb.get() or "").strip()
+        try:
+            idx = values.index(current)
+        except ValueError:
+            idx = 0
+        delta = getattr(event, "delta", 0) or 0
+        step = -1 if delta > 0 else 1
+        next_idx = max(0, min(len(values) - 1, idx + step))
+        cb.set(values[next_idx])
+        self._on_usi_exterior_selection_change()
+        return "break"
+
+    def _bind_usi_exterior_model_interactions(self, cb_model) -> None:
+        # CTkComboBox folosește entry intern; legăm atât pe combo cât și pe entry pentru consistență.
+        try:
+            entry = getattr(cb_model, "_entry", None) or getattr(cb_model, "entry", None)
+            if entry is not None:
+                entry.bind("<KeyRelease>", self._on_usi_exterior_model_keyrelease, add="+")
+                entry.bind("<MouseWheel>", self._on_usi_exterior_model_mousewheel, add="+")
+        except Exception:
+            pass
+        cb_model.bind("<KeyRelease>", self._on_usi_exterior_model_keyrelease, add="+")
+        cb_model.bind("<MouseWheel>", self._on_usi_exterior_model_mousewheel, add="+")
+
+    def _usi_exterior_set_toc(self, label: str) -> None:
+        self._usi_exterior_toc_selected = label
+        w = getattr(self, "_usi_exterior_widgets", None) or {}
+        cb_toc = w.get("cb_toc")
+        if cb_toc is not None:
+            try:
+                cb_toc.set(label)
+            except Exception:
+                pass
+        self._on_usi_exterior_selection_change()
+
+    def _on_usi_exterior_decor_change(self, _event=None) -> None:
+        w = getattr(self, "_usi_exterior_widgets", None) or {}
+        entry = w.get("entry_decor")
+        if entry is None:
+            return
+        cur = entry.get() or ""
+        upper = cur.upper()
+        if upper != cur:
+            pos = entry.index("insert")
+            entry.delete(0, "end")
+            entry.insert(0, upper)
+            try:
+                entry.icursor(pos)
+            except Exception:
+                pass
+
+    def _render_usi_exterior_model_tiles(self) -> None:
+        w = getattr(self, "_usi_exterior_widgets", None) or {}
+        grid = w.get("model_grid")
+        search = w.get("model_search")
+        if grid is None:
+            return
+        for c in grid.winfo_children():
+            c.destroy()
+        query = (search.get() or "").strip().lower() if search is not None else ""
+        labels = list(getattr(self, "_usi_exterior_model_labels", []))
+        if query:
+            labels = [x for x in labels if self._smart_model_match_score(query, x) is not None]
+        self._usi_exterior_model_filtered_labels = labels
+        if labels and getattr(self, "_usi_exterior_model_selected", None) not in labels:
+            self._usi_exterior_model_selected = labels[0]
+        if not labels:
+            ctk.CTkLabel(grid, text="Nu există modele pentru filtrul introdus.", text_color="#8D8D8D").pack(anchor="w", pady=6)
+            return
+        cols = 3
+        for i, label in enumerate(labels):
+            selected = label == getattr(self, "_usi_exterior_model_selected", "")
+            txt = f"{label}  {'✓' if selected else ''}"
+            btn = ctk.CTkButton(
+                grid,
+                text=txt.strip(),
+                width=200,
+                height=44,
+                corner_radius=10,
+                fg_color="#262626" if selected else "#3A3A3A",
+                border_width=2 if selected else 1,
+                border_color="#39FF14" if selected else "#4A4A4A",
+                hover_color="#454545",
+                anchor="w",
+                font=("Segoe UI", 10, "bold"),
+                command=lambda x=label: self._select_usi_exterior_model(x),
+            )
+            btn.grid(row=i // cols, column=i % cols, padx=4, pady=4, sticky="ew")
+        for c in range(cols):
+            grid.grid_columnconfigure(c, weight=1)
+
+    def _select_usi_exterior_model(self, label: str) -> None:
+        self._usi_exterior_model_selected = label
+        self._render_usi_exterior_model_tiles()
+        self._on_usi_exterior_selection_change()
+
+    def _usi_ext_dim_eff(self, raw: float | None) -> float | None:
+        if raw is None:
+            return None
+        try:
+            return max(0.0, float(raw) - float(USI_EXTERIOR_COUPLING_MM))
+        except (TypeError, ValueError):
+            return None
+
+    def _usi_ext_collect_dims(self, model_row: dict | None) -> dict[str, tuple[float | None, float | None]]:
+        """Returnează (raw, efectiv) pentru foaie / toc / luminator după chei uzuale din Supabase."""
+        if not model_row:
+            return {}
+        r = model_row
+        out: dict[str, tuple[float | None, float | None]] = {}
+        lf = self._usi_ext_float_from_row(
+            r,
+            ("latime_foaie_mm", "latime_foaie", "l_foaie_mm", "L_foaie", "latime_foaie_nominal"),
+        )
+        hf = self._usi_ext_float_from_row(
+            r,
+            ("inaltime_foaie_mm", "inaltime_foaie", "h_foaie_mm", "H_foaie", "inaltime_foaie_nominal"),
+        )
+        if lf is not None:
+            out["foaie_l"] = (lf, self._usi_ext_dim_eff(lf))
+        if hf is not None:
+            out["foaie_h"] = (hf, self._usi_ext_dim_eff(hf))
+        lt = self._usi_ext_float_from_row(
+            r,
+            ("latime_toc_mm", "latime_toc", "l_toc_mm", "L_toc"),
+        )
+        ht = self._usi_ext_float_from_row(
+            r,
+            ("inaltime_toc_mm", "inaltime_toc", "h_toc_mm", "H_toc"),
+        )
+        if lt is not None:
+            out["toc_l"] = (lt, self._usi_ext_dim_eff(lt))
+        if ht is not None:
+            out["toc_h"] = (ht, self._usi_ext_dim_eff(ht))
+        hl = self._usi_ext_float_from_row(
+            r,
+            (
+                "inaltime_luminator_mm",
+                "inaltime_luminatoare_mm",
+                "h_luminator_mm",
+                "inaltime_luminator",
+                "inaltime_luminatoare",
+            ),
+        )
+        ll = self._usi_ext_float_from_row(
+            r,
+            ("latime_luminator_mm", "latime_luminatoare_mm", "l_luminator_mm"),
+        )
+        if ll is not None:
+            out["lum_l"] = (ll, self._usi_ext_dim_eff(ll))
+        if hl is not None:
+            out["lum_h"] = (hl, self._usi_ext_dim_eff(hl))
+        return out
+
+    @staticmethod
+    def _usi_ext_fmt_mm(v: float | None) -> str:
+        if v is None:
+            return "—"
+        if abs(v - round(v)) < 1e-6:
+            return f"{int(round(v))} mm"
+        return f"{v:.1f} mm"
+
+    def _usi_ext_find_toc_row(self, rows: list[dict], preset_label: str) -> dict | None:
+        if not rows:
+            return None
+        lab = preset_label.upper().replace(" ", "")
+        for r in rows:
+            for key in ("denumire", "nume", "tip", "cod", "tip_toc", "label"):
+                v = (r.get(key) or "").strip()
+                if not v:
+                    continue
+                vn = v.upper().replace(" ", "")
+                if lab in vn or vn in lab:
+                    return r
+        return None
+
+    def _deschide_configurator_usi_exterior(self) -> None:
+        if not getattr(self, "win_oferta", None) or not self.win_oferta.winfo_exists():
+            return
+        if not getattr(self, "_frame_usi_exterior_host", None):
+            return
+        self._build_usi_exterior_configurator_if_needed()
+        try:
+            self.f_cos.pack_forget()
+        except Exception:
+            pass
+        self._frame_usi_exterior_host.pack(side="right", fill="both", padx=(0, 0))
+
+    def _inchide_configurator_usi_exterior(self) -> None:
+        if not getattr(self, "_frame_usi_exterior_host", None):
+            return
+        try:
+            self._frame_usi_exterior_host.pack_forget()
+        except Exception:
+            pass
+        try:
+            self.f_cos.pack(side="right", fill="both", padx=(4, 0))
+        except Exception:
+            pass
+
+    def _build_usi_exterior_configurator_if_needed(self) -> None:
+        if getattr(self, "_usi_exterior_panel_built", False):
+            return
+        ro = bool(getattr(self, "_win_oferta_readonly", False))
+        host = self._frame_usi_exterior_host
+        outer = ctk.CTkFrame(host, fg_color="#242424", bg_color="#242424")
+        outer.pack(fill="both", expand=True, padx=2, pady=10)
+
+        f_head = ctk.CTkFrame(outer, fg_color="transparent", bg_color=CORP_FRAME_BG)
+        f_head.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(
+            f_head,
+            text="Uși exterior — configurare",
+            font=("Segoe UI", 15, "bold"),
+            text_color="#2E7D32",
+        ).pack(side="left", padx=(2, 8))
+        btn_back = ctk.CTkButton(
+            f_head,
+            text="Înapoi la coș",
+            width=140,
+            height=32,
+            font=("Segoe UI", 11),
+            fg_color="transparent",
+            hover_color="#353535",
+            corner_radius=OFERTA_WIDGET_RADIUS,
+            border_width=1,
+            border_color=BORDER_GRAY,
+            text_color="#ECEFF1",
+            command=self._inchide_configurator_usi_exterior,
+        )
+        btn_back.pack(side="right")
+
+        f_body = ctk.CTkFrame(outer, fg_color="transparent", bg_color="#242424")
+        f_body.pack(fill="both", expand=True)
+        f_body.grid_columnconfigure(0, weight=3)  # 60%
+        f_body.grid_columnconfigure(1, weight=2)  # 40%
+        f_body.grid_rowconfigure(0, weight=1)
+
+        f_left_outer = ctk.CTkFrame(
+            f_body,
+            fg_color="#2D2D2D",
+            corner_radius=OFERTA_WIDGET_RADIUS,
+            border_width=1,
+            border_color=BORDER_GRAY,
+        )
+        f_left_outer.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        f_left_inner = ctk.CTkFrame(f_left_outer, fg_color="#2D2D2D", bg_color="#2D2D2D")
+        f_left_inner.pack(fill="both", expand=True, padx=8, pady=8)
+
+        card_model = ctk.CTkFrame(f_left_inner, fg_color="#313131", corner_radius=12, border_width=1, border_color="#3b3b3b")
+        card_model.pack(fill="x", pady=(0, 10))
+        ctk.CTkLabel(card_model, text="Model", font=("Segoe UI", 13, "bold")).pack(anchor="w", padx=12, pady=(10, 6))
+        cb_model = ctk.CTkComboBox(
+            card_model,
+            width=780,
+            values=["Se încarcă…"],
+            state="disabled",
+            command=lambda _c: self._on_usi_exterior_selection_change(),
+        )
+        cb_model.pack(fill="x", padx=12, pady=(0, 12))
+        self._style_modern_combobox(cb_model)
+
+        card_spec = ctk.CTkFrame(f_left_inner, fg_color="#313131", corner_radius=12, border_width=1, border_color="#3b3b3b")
+        card_spec.pack(fill="x", pady=(0, 10))
+        ctk.CTkLabel(card_spec, text="Specificații", font=("Segoe UI", 13, "bold")).pack(anchor="w", padx=12, pady=(10, 4))
+        ctk.CTkLabel(card_spec, text="Tip Toc", font=("Segoe UI", 11, "bold"), text_color="#CFCFCF").pack(anchor="w", padx=12, pady=(0, 6))
+        cb_toc = ctk.CTkComboBox(
+            card_spec,
+            width=780,
+            values=list(USI_EXTERIOR_TOC_LABELS),
+            state="normal" if not ro else "disabled",
+            command=lambda value: self._usi_exterior_set_toc(value),
+        )
+        cb_toc.pack(fill="x", padx=12, pady=(0, 8))
+        self._style_modern_combobox(cb_toc)
+        ctk.CTkLabel(card_spec, text="Decor (manual)", font=("Segoe UI", 11, "bold"), text_color="#CFCFCF").pack(
+            anchor="w", padx=12, pady=(2, 6)
+        )
+        entry_decor = ctk.CTkEntry(card_spec, width=780, placeholder_text="Introduceți decorul...")
+        entry_decor.pack(fill="x", padx=12, pady=(0, 10))
+        self._style_modern_entry(entry_decor)
+        entry_decor.bind("<KeyRelease>", self._on_usi_exterior_decor_change, add="+")
+
+        card_dim = ctk.CTkFrame(f_left_inner, fg_color="#313131", corner_radius=12, border_width=1, border_color="#3b3b3b")
+        card_dim.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(card_dim, text="Dimensiuni", font=("Segoe UI", 13, "bold")).pack(anchor="w", padx=12, pady=(10, 6))
+        dim_row = ctk.CTkFrame(card_dim, fg_color="transparent")
+        dim_row.pack(fill="x", padx=12, pady=(0, 10))
+        ctk.CTkLabel(dim_row, text="📏 Lățime (mm)", font=("Segoe UI", 10), text_color="#BDBDBD").pack(side="left", padx=(0, 8))
+        entry_w = ctk.CTkEntry(dim_row, width=120, placeholder_text="ex: 900")
+        entry_w.pack(side="left", padx=(0, 16))
+        self._style_modern_entry(entry_w)
+        ctk.CTkLabel(dim_row, text="📏 Înălțime (mm)", font=("Segoe UI", 10), text_color="#BDBDBD").pack(side="left", padx=(0, 8))
+        entry_h = ctk.CTkEntry(dim_row, width=120, placeholder_text="ex: 2050")
+        entry_h.pack(side="left")
+        self._style_modern_entry(entry_h)
+        entry_w.bind("<KeyRelease>", lambda _e: self._on_usi_exterior_selection_change(), add="+")
+        entry_h.bind("<KeyRelease>", lambda _e: self._on_usi_exterior_selection_change(), add="+")
+
+        f_right = ctk.CTkFrame(
+            f_body,
+            fg_color="#2D2D2D",
+            corner_radius=OFERTA_WIDGET_RADIUS,
+            border_width=1,
+            border_color=BORDER_GRAY,
+            width=620,
+        )
+        f_right.grid(row=0, column=1, sticky="nsew", padx=(0, 0))
+        f_right.pack_propagate(False)
+        ctk.CTkLabel(
+            f_right,
+            text="Rezumat Configurație",
+            font=("Segoe UI", 14, "bold"),
+            text_color="#ECEFF1",
+        ).pack(anchor="w", padx=12, pady=(12, 6))
+
+        lbl_sum_model = ctk.CTkLabel(
+            f_right,
+            text="Model: —",
+            font=("Segoe UI", 11),
+            text_color="#aaaaaa",
+            anchor="w",
+            justify="left",
+        )
+        lbl_sum_model.pack(fill="x", padx=12, pady=4)
+        lbl_sum_toc = ctk.CTkLabel(
+            f_right,
+            text="Tip toc: —",
+            font=("Segoe UI", 11),
+            text_color="#aaaaaa",
+            anchor="w",
+            justify="left",
+        )
+        lbl_sum_toc.pack(fill="x", padx=12, pady=4)
+        lbl_sum_dims = ctk.CTkLabel(
+            f_right,
+            text="Dimensiuni calculate:\n—",
+            font=("Consolas", 11),
+            text_color="#ECEFF1",
+            anchor="w",
+            justify="left",
+        )
+        lbl_sum_dims.pack(fill="x", padx=12, pady=(8, 4))
+        ctk.CTkFrame(f_right, height=1, fg_color="#4A4A4A").pack(fill="x", padx=12, pady=(8, 8))
+        lbl_sum_pret = ctk.CTkLabel(
+            f_right,
+            text="Preț EUR: — €   |   Preț RON cu TVA: — RON",
+            font=("Segoe UI", 12, "bold"),
+            text_color="#2E7D32",
+            anchor="w",
+            justify="left",
+        )
+        lbl_sum_pret.pack(fill="x", padx=12, pady=(10, 6))
+
+        btn_add = ctk.CTkButton(
+            f_right,
+            text="ADAUGĂ ÎN OFERTĂ",
+            width=560,
+            height=44,
+            font=("Segoe UI", 13, "bold"),
+            fg_color="#2E7D32",
+            hover_color="#256A2A",
+            corner_radius=OFERTA_WIDGET_RADIUS,
+            text_color="white",
+            state="disabled" if ro else "normal",
+            command=self._adauga_usi_exterior_in_cos,
+        )
+        btn_add.pack(fill="x", padx=12, pady=(10, 14))
+
+        self._usi_exterior_toc_selected = USI_EXTERIOR_TOC_LABELS[0]
+        cb_toc.set(self._usi_exterior_toc_selected)
+
+        self._usi_exterior_widgets = {
+            "cb_model": cb_model,
+            "cb_toc": cb_toc,
+            "entry_decor": entry_decor,
+            "entry_w": entry_w,
+            "entry_h": entry_h,
+            "lbl_model": lbl_sum_model,
+            "lbl_toc": lbl_sum_toc,
+            "lbl_dims": lbl_sum_dims,
+            "lbl_pret": lbl_sum_pret,
+            "btn_add": btn_add,
+        }
+        self._usi_exterior_modele_rows: list[dict] = []
+        self._usi_exterior_model_labels: list[str] = []
+        self._usi_exterior_model_filtered_labels: list[str] = []
+        self._usi_exterior_panel_built = True
+
+        def _load_worker() -> None:
+            try:
+                modele = get_usi_exterioare_rows()
+                err = ""
+            except Exception:
+                logger.exception("Încărcare Supabase uși exterior (usi_exterioare)")
+                modele = []
+                err = "Eroare la încărcarea datelor din cloud."
+
+            def _apply() -> None:
+                self._usi_exterior_modele_rows = modele
+                labels: list[str] = []
+                seen: set[str] = set()
+                for i, row in enumerate(modele):
+                    nume = ((row.get("model") or row.get("denumire") or row.get("nume") or row.get("cod") or "").strip())
+                    if not nume:
+                        nume = f"Model #{i + 1}"
+                    key = nume.lower()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    labels.append(nume)
+                self._usi_exterior_model_labels = labels
+                w = self._usi_exterior_widgets
+                cb_m = w["cb_model"]
+                if not labels:
+                    cb_m.configure(values=["(Nu există modele în cloud)"], state="disabled")
+                    w["btn_add"].configure(state="disabled")
+                    if err:
+                        self.afiseaza_mesaj("Atenție", err, "#7a1a1a")
+                else:
+                    self._usi_exterior_model_filtered_labels = list(labels)
+                    cb_m.configure(values=labels, state="normal")
+                    cb_m.set(labels[0])
+                    self._bind_usi_exterior_model_interactions(cb_m)
+                    w["btn_add"].configure(state="disabled" if ro else "normal")
+                self._usi_exterior_set_toc(self._usi_exterior_toc_selected)
+                self._on_usi_exterior_selection_change()
+
+            self.after(0, _apply)
+
+        threading.Thread(target=_load_worker, daemon=True).start()
+
+    def _on_usi_exterior_selection_change(self) -> None:
+        w = getattr(self, "_usi_exterior_widgets", None)
+        if not w:
+            return
+        cb_m = w.get("cb_model")
+        lab = (cb_m.get() or "").strip() if cb_m is not None else ""
+        if lab.startswith("(") or lab == "Se încarcă…":
+            row_m = None
+        else:
+            try:
+                model_key = lab.strip().lower()
+                row_m = next(
+                    (
+                        r
+                        for r in self._usi_exterior_modele_rows
+                        if str(r.get("model") or r.get("denumire") or r.get("nume") or r.get("cod") or "").strip().lower() == model_key
+                    ),
+                    None,
+                )
+            except (ValueError, IndexError, StopIteration):
+                row_m = None
+        toc_lbl = (getattr(self, "_usi_exterior_toc_selected", USI_EXTERIOR_TOC_LABELS[0]) or USI_EXTERIOR_TOC_LABELS[0]).strip()
+
+        pret_baza = self._usi_ext_pret_baza_model(row_m)
+        pret_adaos = self._usi_ext_pret_toc_from_model_row(row_m, toc_lbl) or 0.0
+        if pret_adaos <= 0:
+            row_t = self._usi_ext_find_model_toc_row(self._usi_exterior_modele_rows, lab, toc_lbl)
+            pret_adaos = self._usi_ext_pret_adaos_toc(row_t)
+        total = round(pret_baza + pret_adaos, 2)
+
+        dims = self._usi_ext_collect_dims(row_m)
+        lines: list[str] = []
+        fl = dims.get("foaie_l")
+        fh = dims.get("foaie_h")
+        if fl and fh:
+            lr, le = fl
+            hr, he = fh
+            lines.append(
+                f"Foaie: {self._usi_ext_fmt_mm(le)} × {self._usi_ext_fmt_mm(he)} "
+                f"(nominal {self._usi_ext_fmt_mm(lr)} × {self._usi_ext_fmt_mm(hr)})"
+            )
+        t1 = dims.get("toc_l")
+        t2 = dims.get("toc_h")
+        if t1 and t2:
+            lr, le = t1
+            hr, he = t2
+            lines.append(
+                f"Toc: {self._usi_ext_fmt_mm(le)} × {self._usi_ext_fmt_mm(he)} "
+                f"(nominal {self._usi_ext_fmt_mm(lr)} × {self._usi_ext_fmt_mm(hr)})"
+            )
+        l1 = dims.get("lum_l")
+        l2 = dims.get("lum_h")
+        if l1 and l2:
+            lr, le = l1
+            hr, he = l2
+            lines.append(
+                f"Luminator: {self._usi_ext_fmt_mm(le)} × {self._usi_ext_fmt_mm(he)} "
+                f"(nominal {self._usi_ext_fmt_mm(lr)} × {self._usi_ext_fmt_mm(hr)})"
+            )
+        if not lines:
+            lines.append("— (completează dimensiunile nominale în tabelul `usi_exterioare`)")
+        try:
+            wv = float((w.get("entry_w").get() or "").strip().replace(",", "."))
+            hv = float((w.get("entry_h").get() or "").strip().replace(",", "."))
+            w_eff = max(0.0, wv - USI_EXTERIOR_COUPLING_MM)
+            h_eff = max(0.0, hv - USI_EXTERIOR_COUPLING_MM)
+            lines.append(
+                f"Input util: {self._usi_ext_fmt_mm(w_eff)} × {self._usi_ext_fmt_mm(h_eff)} "
+                f"(din {self._usi_ext_fmt_mm(wv)} × {self._usi_ext_fmt_mm(hv)})"
+            )
+        except Exception:
+            pass
+
+        total_ron_tva = round(total * float(self.curs_euro) * (1 + float(self.tva_procent) / 100.0), 2)
+        w["lbl_model"].configure(text=f"Model: {lab if row_m else '—'}")
+        w["lbl_toc"].configure(text=f"Tip toc: {toc_lbl}")
+        w["lbl_dims"].configure(text="Dimensiuni calculate:\n" + "\n".join(lines))
+        w["lbl_pret"].configure(
+            text=(
+                f"Preț EUR: {total:.2f} €   |   "
+                f"Preț RON cu TVA: {total_ron_tva:.2f} RON"
+            )
+        )
+
+    def _adauga_usi_exterior_in_cos(self) -> None:
+        if getattr(self, "_win_oferta_readonly", False):
+            return
+        w = getattr(self, "_usi_exterior_widgets", None)
+        if not w:
+            return
+        cb_m = w.get("cb_model")
+        lab = (cb_m.get() or "").strip() if cb_m is not None else ""
+        if not lab or lab.startswith("(") or lab == "Se încarcă…":
+            self.afiseaza_mesaj("Atenție", "Selectează un model valid.", "#7a1a1a")
+            return
+        try:
+            model_key = lab.strip().lower()
+            row_m = next(
+                (
+                    r
+                    for r in self._usi_exterior_modele_rows
+                    if str(r.get("model") or r.get("denumire") or r.get("nume") or r.get("cod") or "").strip().lower() == model_key
+                ),
+                None,
+            )
+            if row_m is None:
+                raise ValueError("Model negasit")
+        except (ValueError, IndexError):
+            self.afiseaza_mesaj("Atenție", "Selectează un model valid.", "#7a1a1a")
+            return
+        toc_lbl = (getattr(self, "_usi_exterior_toc_selected", USI_EXTERIOR_TOC_LABELS[0]) or USI_EXTERIOR_TOC_LABELS[0]).strip()
+        pret_baza = self._usi_ext_pret_baza_model(row_m)
+        pret_adaos = self._usi_ext_pret_toc_from_model_row(row_m, toc_lbl) or 0.0
+        if pret_adaos <= 0:
+            row_t = self._usi_ext_find_model_toc_row(self._usi_exterior_modele_rows, lab, toc_lbl)
+            pret_adaos = self._usi_ext_pret_adaos_toc(row_t)
+        total = round(pret_baza + pret_adaos, 2)
+        if total <= 0:
+            self.afiseaza_mesaj("Atenție", "Prețul calculat este 0. Verifică datele din tabelul `usi_exterioare`.", "#7a1a1a")
+            return
+        decor_txt = (w.get("entry_decor").get() or "").strip().upper() if w.get("entry_decor") is not None else ""
+        decor_suffix = f" ({decor_txt})" if decor_txt else ""
+        nume = f"USA EXTERIOR {lab} — Toc {toc_lbl}{decor_suffix}"
+        self.cos_cumparaturi.append(
+            {
+                "nume": nume,
+                "pret_eur": total,
+                "qty": 1,
+                "tip": "usi",
+                "furnizor": "Exterior",
+                "usi_exterior_kit": True,
+                "usi_exterior_model": lab,
+                "usi_exterior_toc": toc_lbl,
+                "usi_exterior_decor": decor_txt,
+            }
+        )
+        self.refresh_cos(getattr(self, "_win_oferta_readonly", False))
+        self._inchide_configurator_usi_exterior()
 
     def _refresh_oferta_catalog(self):
         """Reîncarcă catalogul din baza de date și actualizează lista de produse și cosul (fără a închide oferta)."""
@@ -5528,7 +6289,15 @@ class AplicatieOfertare(ctk.CTk):
         return sum(i.get("qty", 0) for i in self.cos_cumparaturi if self._get_item_tip(i) == "usi")
 
     def _total_tocuri(self):
-        return sum(i.get("qty", 0) for i in self.cos_cumparaturi if self._get_item_tip(i) == "tocuri")
+        n = sum(i.get("qty", 0) for i in self.cos_cumparaturi if self._get_item_tip(i) == "tocuri")
+        # Kit ușă exterior: tocul e inclus la preț — echiv. un toc pentru validarea Safe Mode (uși = tocuri).
+        for i in self.cos_cumparaturi:
+            if i.get("usi_exterior_kit") and self._get_item_tip(i) == "usi":
+                try:
+                    n += float(i.get("qty") or 1)
+                except (TypeError, ValueError):
+                    n += 1
+        return n
 
     def _get_furnizor_from_nume(self, nume: str) -> str | None:
         """Extrage furnizorul din nume când e prefix [Stoc]/[Erkado] (ex: tocuri, accesorii)."""
@@ -5548,7 +6317,7 @@ class AplicatieOfertare(ctk.CTk):
     def _get_furnizor_from_item(self, item: dict) -> str:
         """Furnizor din coș: cheia 'furnizor' sau parsare [Stoc]/[Erkado] din nume (compat. înapoi)."""
         f = (item.get("furnizor") or "").strip()
-        if f in ("Stoc", "Erkado"):
+        if f in ("Stoc", "Erkado", "Exterior"):
             return f
         parsed = self._get_furnizor_from_nume(item.get("nume") or "")
         if parsed:
@@ -6778,90 +7547,95 @@ class AplicatieOfertare(ctk.CTk):
                 ).pack(side="left", padx=4)
                 # Buton transformare: simplu ↔ dublă/dublu + Kit Glisare Simplu / Toc Tunel
                 tip_item = item.get("tip")
+                furn_item = self._get_furnizor_from_item(item) if tip_item in ("usi", "tocuri") else ""
                 if tip_item in ("usi", "tocuri"):
-                    btn_neutral = "#2563eb"
-                    btn_green_on = "#2E7D32"
-                    btn_blue_on = "#3b82f6"
-                    btn_yellow_on = "#ca8a04"
-                    if item.get("dubla"):
-                        btn_text = "Simplă" if tip_item == "usi" else "Simplu"
-                        ctk.CTkButton(
-                            f_controls,
-                            text=btn_text,
-                            width=70,
-                            height=25,
-                            fg_color=btn_blue_on,
-                            command=lambda idx=i: self.transforma_in_simpla(idx),
-                        ).pack(side="left", padx=4)
+                    if tip_item == "usi" and furn_item == "Exterior":
+                        # Pentru ușile de exterior nu afișăm formulele de transformare (dublă/glisantă/debara).
+                        pass
                     else:
-                        btn_dubla_text = "→ Dublu" if tip_item == "tocuri" else "→ Dublă"
-                        ctk.CTkButton(
-                            f_controls,
-                            text=btn_dubla_text,
-                            width=70,
-                            height=25,
-                            fg_color=btn_neutral,
-                            command=lambda idx=i: self.transforma_in_dubla(idx),
-                        ).pack(side="left", padx=4)
-                    if tip_item == "usi":
-                        if self._is_stoc_usa_pt_debara(item):
-                            debara_on = bool(item.get("debara"))
+                        btn_neutral = "#2563eb"
+                        btn_green_on = "#2E7D32"
+                        btn_blue_on = "#3b82f6"
+                        btn_yellow_on = "#ca8a04"
+                        if item.get("dubla"):
+                            btn_text = "Simplă" if tip_item == "usi" else "Simplu"
                             ctk.CTkButton(
                                 f_controls,
-                                text="DEBARA",
-                                width=88,
+                                text=btn_text,
+                                width=70,
                                 height=25,
-                                fg_color=btn_green_on if debara_on else btn_neutral,
-                                command=lambda idx=i: self._toggle_debara_usa(idx),
+                                fg_color=btn_blue_on,
+                                command=lambda idx=i: self.transforma_in_simpla(idx),
                             ).pack(side="left", padx=4)
-                        ctk.CTkButton(
-                            f_controls,
-                            text="Kit Glisare Simplu",
-                            width=120,
-                            height=25,
-                            fg_color=btn_yellow_on if item.get("glisare_activ") else btn_neutral,
-                            command=lambda idx=i: self._on_kit_glisare_simplu(idx),
-                        ).pack(side="left", padx=4)
-                        if item.get("glisare_activ"):
-                            mod_glis = item.get("glisare_mod") or "fara"
+                        else:
+                            btn_dubla_text = "→ Dublu" if tip_item == "tocuri" else "→ Dublă"
                             ctk.CTkButton(
                                 f_controls,
-                                text="Fără închidere",
+                                text=btn_dubla_text,
+                                width=70,
+                                height=25,
+                                fg_color=btn_neutral,
+                                command=lambda idx=i: self.transforma_in_dubla(idx),
+                            ).pack(side="left", padx=4)
+                        if tip_item == "usi":
+                            if self._is_stoc_usa_pt_debara(item):
+                                debara_on = bool(item.get("debara"))
+                                ctk.CTkButton(
+                                    f_controls,
+                                    text="DEBARA",
+                                    width=88,
+                                    height=25,
+                                    fg_color=btn_green_on if debara_on else btn_neutral,
+                                    command=lambda idx=i: self._toggle_debara_usa(idx),
+                                ).pack(side="left", padx=4)
+                            ctk.CTkButton(
+                                f_controls,
+                                text="Kit Glisare Simplu",
                                 width=120,
                                 height=25,
-                                fg_color=btn_yellow_on if mod_glis == "fara" else btn_neutral,
-                                command=lambda idx=i: self._set_glisare_mod(idx, "fara"),
+                                fg_color=btn_yellow_on if item.get("glisare_activ") else btn_neutral,
+                                command=lambda idx=i: self._on_kit_glisare_simplu(idx),
                             ).pack(side="left", padx=4)
-                            ctk.CTkButton(
-                                f_controls,
-                                text="Cu închidere",
-                                width=120,
-                                height=25,
-                                fg_color=btn_yellow_on if mod_glis == "cu" else btn_neutral,
-                                command=lambda idx=i: self._set_glisare_mod(idx, "cu"),
-                            ).pack(side="left", padx=4)
-                    elif tip_item == "tocuri":
-                        furnizor_toc = self._get_furnizor_from_item(item)
-                        if self._has_usa_cu_kit_glisare():
-                            este_tunel = bool(item.get("toc_tunel"))
-                            ctk.CTkButton(
-                                f_controls,
-                                text="Toc tunel",
-                                width=100,
-                                height=25,
-                                fg_color=btn_yellow_on if este_tunel else btn_neutral,
-                                command=lambda idx=i, activ=not este_tunel: self._set_toc_tunel(idx, activ),
-                            ).pack(side="left", padx=4)
-                        if furnizor_toc == "Stoc" and not item.get("dubla"):
-                            dt_on = bool(item.get("debara_toc"))
-                            ctk.CTkButton(
-                                f_controls,
-                                text="DEBARA",
-                                width=88,
-                                height=25,
-                                fg_color=btn_green_on if dt_on else btn_neutral,
-                                command=lambda idx=i: self._toggle_debara_toc(idx),
-                            ).pack(side="left", padx=4)
+                            if item.get("glisare_activ"):
+                                mod_glis = item.get("glisare_mod") or "fara"
+                                ctk.CTkButton(
+                                    f_controls,
+                                    text="Fără închidere",
+                                    width=120,
+                                    height=25,
+                                    fg_color=btn_yellow_on if mod_glis == "fara" else btn_neutral,
+                                    command=lambda idx=i: self._set_glisare_mod(idx, "fara"),
+                                ).pack(side="left", padx=4)
+                                ctk.CTkButton(
+                                    f_controls,
+                                    text="Cu închidere",
+                                    width=120,
+                                    height=25,
+                                    fg_color=btn_yellow_on if mod_glis == "cu" else btn_neutral,
+                                    command=lambda idx=i: self._set_glisare_mod(idx, "cu"),
+                                ).pack(side="left", padx=4)
+                        elif tip_item == "tocuri":
+                            furnizor_toc = self._get_furnizor_from_item(item)
+                            if self._has_usa_cu_kit_glisare():
+                                este_tunel = bool(item.get("toc_tunel"))
+                                ctk.CTkButton(
+                                    f_controls,
+                                    text="Toc tunel",
+                                    width=100,
+                                    height=25,
+                                    fg_color=btn_yellow_on if este_tunel else btn_neutral,
+                                    command=lambda idx=i, activ=not este_tunel: self._set_toc_tunel(idx, activ),
+                                ).pack(side="left", padx=4)
+                            if furnizor_toc == "Stoc" and not item.get("dubla"):
+                                dt_on = bool(item.get("debara_toc"))
+                                ctk.CTkButton(
+                                    f_controls,
+                                    text="DEBARA",
+                                    width=88,
+                                    height=25,
+                                    fg_color=btn_green_on if dt_on else btn_neutral,
+                                    command=lambda idx=i: self._toggle_debara_toc(idx),
+                                ).pack(side="left", padx=4)
                 # Pe rândul suplimentar "Kit Glisare Simplu Peste Perete" afișăm SP1NZ/SP1Z (Erkado/nu) și SP1B
                 if not readonly and (item.get("nume") or "").strip() == "Kit Glisare Simplu Peste Perete":
                     has_erkado_usi = self._has_erkado_usi()
