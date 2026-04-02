@@ -38,6 +38,16 @@ from .serialization import loads_offer_items
 from .db import get_user_full_name
 from .services import fetch_bnr_eur_rate
 from .updater import list_updates_for_admin, upload_new_version
+from .db_cloud import (
+    TOCURI_FIX90_TIP,
+    TOC_ERKADO_DB_REGLABIL_FARA_FALT,
+    TOC_ERKADO_UI_REGLABIL_CU_FALT,
+    erkado_parte_toc_cu_dimensiune,
+    erkado_tip_toc_nume_part,
+    tip_toc_db_to_ui_erkado,
+    tip_toc_from_excel_cell,
+    tip_toc_ui_to_db_erkado,
+)
 
 logger = logging.getLogger(__name__)
 # Temă corporate (aceeași paletă ca ofertare/ui.py)
@@ -1014,7 +1024,7 @@ class AdminApp(ctk.CTk):
         # --- Câmpuri doar pentru Tocuri (ascunse la celelalte categorii) ---
         self._lbl_tip_toc = ctk.CTkLabel(frame, text="Tipul tocului:")
         self._lbl_tip_toc.grid(row=row, column=0, padx=10, pady=5, sticky="e")
-        self.inputs["tip_toc"] = ctk.CTkComboBox(frame, values=["Fix", "Reglabil"], width=300)
+        self.inputs["tip_toc"] = ctk.CTkComboBox(frame, values=["Fix", "Reglabil"], width=380)
         self.inputs["tip_toc"].set("Fix")
         self.inputs["tip_toc"].grid(row=row, column=1, padx=10, pady=5, sticky="we")
         row += 1
@@ -1067,6 +1077,32 @@ class AdminApp(ctk.CTk):
 
         frame.columnconfigure(1, weight=1)
         self._vizibilitate_form_categorie()
+
+    def _tip_toc_combo_values_admin(self) -> list[str]:
+        if self.cat_selectata != "Tocuri":
+            return ["Fix", "Reglabil"]
+        if self.furnizor_selectat == "Erkado":
+            return [
+                "Fix",
+                TOCURI_FIX90_TIP,
+                TOC_ERKADO_UI_REGLABIL_CU_FALT,
+                TOC_ERKADO_DB_REGLABIL_FARA_FALT,
+            ]
+        return ["Fix", "Reglabil"]
+
+    def _sync_tip_toc_combobox(self) -> None:
+        cb = self.inputs.get("tip_toc")
+        if not cb:
+            return
+        vals = self._tip_toc_combo_values_admin()
+        prev = (cb.get() or "").strip()
+        cb.configure(values=vals)
+        if prev in vals:
+            cb.set(prev)
+        elif self.furnizor_selectat == "Erkado" and prev == "Reglabil":
+            cb.set(TOC_ERKADO_UI_REGLABIL_CU_FALT)
+        else:
+            cb.set(vals[0])
 
     def _validare_reglaj(self, event=None):
         """Permite doar cifre și simbolul '-' (Reglajul); păstrează ' MM' la final dacă există."""
@@ -1195,6 +1231,7 @@ class AdminApp(ctk.CTk):
             self._btn_add.grid(row=6, column=0, columnspan=2, padx=10, pady=(15, 8), sticky="we")
             self._btn_import.grid(row=7, column=0, columnspan=2, padx=10, pady=(5, 8), sticky="we")
             self._lbl_hint.grid(row=8, column=0, columnspan=4, padx=10, pady=(5, 10), sticky="w")
+            self._sync_tip_toc_combobox()
         else:
             # Alte categorii: Furnizor, Categorie, Colecție, Model; apoi fie Decor+Finisaj (Manere, Accesorii), fie multi-select Finisaj (Uși)
             self._lbl_colectie.configure(text="Colecție")
@@ -2219,7 +2256,8 @@ class AdminApp(ctk.CTk):
         finisaje_usi_selectate = []
 
         if cat == "Tocuri":
-            tip_toc = (d.get("tip_toc") or "Fix").strip()
+            tip_raw = (d.get("tip_toc") or "Fix").strip()
+            tip_toc = tip_toc_ui_to_db_erkado(tip_raw) if furnizor == "Erkado" else tip_raw
             reglaj = (d.get("reglaj") or "").strip()
             dimensiune = re.sub(r"[^0-9\-]", "", reglaj)
             if dimensiune and not dimensiune.endswith(" MM"):
@@ -2400,9 +2438,7 @@ class AdminApp(ctk.CTk):
                 dimensiune_val = ""
                 if cat_val == "Tocuri":
                     tip_toc_excel = get_val(["tip_toc", "tip toc", "tipul tocului", "tip"], row)
-                    tip_raw = (tip_toc_excel or "").strip().lower()
-                    # Acceptăm orice valoare care conține „reglabil” (ex: „Toc reglabil”, „Reglabil Drept”)
-                    tip_toc_val = "Reglabil" if "reglabil" in tip_raw else "Fix"
+                    tip_toc_val = tip_toc_from_excel_cell(tip_toc_excel, furn_val)
                     reglaj_excel = get_val(["reglaj", "reglajul", "dimensiune"], row)
                     dimensiune_val = re.sub(r"[^0-9\-]", "", (reglaj_excel or ""))
                     if dimensiune_val and not dimensiune_val.endswith(" MM"):
@@ -2521,9 +2557,12 @@ class AdminApp(ctk.CTk):
         pret = r[8]
         if c_val == "Tocuri":
             dim_afis = dimensiune if dimensiune.endswith(" MM") else (f"{dimensiune} MM" if dimensiune else "")
-            text = f"Toc {tip_toc}"
-            if dim_afis:
-                text += f" Drept {dim_afis}"
+            if furn == "Erkado":
+                text = erkado_parte_toc_cu_dimensiune(tip_toc, dim_afis)
+            else:
+                text = f"Toc {tip_toc}"
+                if dim_afis:
+                    text += f" Drept {dim_afis}"
             if fin:
                 text += f" – {fin}"
             text += f" | {pret} €"

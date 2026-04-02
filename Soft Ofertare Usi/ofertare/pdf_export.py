@@ -56,10 +56,12 @@ def _item_majuscule_stoc_erkado_usi_toc(item: dict[str, Any]) -> bool:
 
 
 def _item_afisare_majuscule_cos_pdf(item: dict[str, Any]) -> bool:
-    """Stoc/Erkado sau kit ușă exterior (inclusiv bară trăgătoare în denumire)."""
+    """Stoc/Erkado sau linii ușă exterior (ușă+toc, bară, accesorii)."""
     if _item_majuscule_stoc_erkado_usi_toc(item):
         return True
-    if item.get("usi_exterior_kit") and str(item.get("furnizor") or "").strip() == "Exterior":
+    if str(item.get("furnizor") or "").strip() != "Exterior":
+        return False
+    if item.get("usi_exterior_kit") or item.get("usi_exterior_bara_line") or item.get("usi_exterior_accesoriu"):
         return True
     return False
 

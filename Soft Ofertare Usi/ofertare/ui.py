@@ -63,6 +63,10 @@ from .db import (
     get_pret_decor_finisaj,
     get_pret_model_finisaj,
     get_pret_tocuri,
+    erkado_parte_toc_cu_dimensiune,
+    erkado_tip_toc_nume_part,
+    tip_toc_db_to_ui_erkado,
+    tip_toc_ui_to_db_erkado,
     get_user_contact_phone,
     get_user_for_login,
     get_user_privileges,
@@ -315,6 +319,33 @@ def _lungime_bara_sort_key(label: str) -> int:
     return int(m.group(1)) if m else 0
 
 
+def _lungime_bara_label_afisare(cheie_bd: str) -> str:
+    """Afișare în combobox: «lungime 120 cm» / «lungime60cm» → «120 cm» / «60cm»."""
+    s = (cheie_bd or "").strip()
+    if not s:
+        return ""
+    m = re.match(r"^\s*lungime\s*(.+)$", s, re.IGNORECASE)
+    if m:
+        rest = m.group(1).strip()
+        return rest if rest else s
+    return s
+
+
+def _lungime_bara_key_pentru_afisare(afisare: str, chei_bd: list[str]) -> str | None:
+    """Mapează eticheta din UI la cheia exactă din matrice (după normalizare «lungime …»)."""
+    a = (afisare or "").strip()
+    if not a or a == USI_EXTERIOR_BARA_PLACEHOLDER:
+        return None
+    a_cf = a.casefold()
+    for k in chei_bd:
+        if _lungime_bara_label_afisare(k).strip().casefold() == a_cf:
+            return k
+    for k in chei_bd:
+        if k.strip().casefold() == a_cf:
+            return k
+    return None
+
+
 def _usi_exterior_build_bare_matrix(modele: list[dict]) -> dict[str, dict[str, dict[str, str]]]:
     """cod → lungime (text din BD) → decor → cheie `model` completă."""
     matrix: dict[str, dict[str, dict[str, str]]] = {}
@@ -330,6 +361,66 @@ def _usi_exterior_build_bare_matrix(modele: list[dict]) -> dict[str, dict[str, d
         cod, lung, dec = parsed
         matrix.setdefault(cod, {}).setdefault(lung, {})[dec] = fk
     return matrix
+
+
+class _UsiExteriorCollapsibleSection(ctk.CTkFrame):
+    """Secțiune expandabilă pentru configuratorul uși exterior (header + săgeată)."""
+
+    def __init__(
+        self,
+        master: Any,
+        title: str,
+        *,
+        start_open: bool = True,
+        fg_color: str = "#313131",
+        border_color: str = "#3b3b3b",
+        corner_radius: int = 12,
+    ) -> None:
+        super().__init__(
+            master,
+            fg_color=fg_color,
+            corner_radius=corner_radius,
+            border_width=1,
+            border_color=border_color,
+        )
+        self._expanded = bool(start_open)
+        self._content = ctk.CTkFrame(self, fg_color="transparent")
+
+        hdr = ctk.CTkFrame(self, fg_color="transparent", cursor="hand2")
+        hdr.pack(fill="x", padx=6, pady=(8, 4))
+        self._arrow = ctk.CTkLabel(
+            hdr,
+            text="▼" if self._expanded else "▶",
+            width=22,
+            font=("Segoe UI", 11),
+            text_color=GREEN_SOFT,
+        )
+        self._arrow.pack(side="left", padx=(4, 2))
+        self._title_lbl = ctk.CTkLabel(
+            hdr,
+            text=title,
+            font=("Segoe UI", 13, "bold"),
+            text_color="#ECEFF1",
+            anchor="w",
+        )
+        self._title_lbl.pack(side="left", fill="x", expand=True)
+        for _w in (hdr, self._arrow, self._title_lbl):
+            _w.bind("<Button-1>", lambda _e: self.toggle())
+
+        if self._expanded:
+            self._content.pack(fill="both", expand=True, padx=4, pady=(0, 8))
+
+    def toggle(self) -> None:
+        self._expanded = not self._expanded
+        self._arrow.configure(text="▼" if self._expanded else "▶")
+        if self._expanded:
+            self._content.pack(fill="both", expand=True, padx=4, pady=(0, 8))
+        else:
+            self._content.pack_forget()
+
+    @property
+    def body(self) -> ctk.CTkFrame:
+        return self._content
 
 
 RADIO_ACCENT = "#546E7A"
@@ -2802,7 +2893,10 @@ class AplicatieOfertare(ctk.CTk):
             if furnizor:
                 partile.append(f"Furnizor: {furnizor}")
             if categorie == "Tocuri" and (tip_toc or dimensiune):
-                partile.append(f"Tip: {tip_toc} Drept {dimensiune}".strip())
+                if furnizor == "Erkado":
+                    partile.append(f"Tip: {erkado_parte_toc_cu_dimensiune(tip_toc, dimensiune)}".strip())
+                else:
+                    partile.append(f"Tip: {tip_toc} Drept {dimensiune}".strip())
             else:
                 if colectie:
                     partile.append(f"Colecție: {colectie}")
@@ -4674,12 +4768,14 @@ class AplicatieOfertare(ctk.CTk):
         cb_model.pack(fill="x", padx=12, pady=(0, 12))
         self._style_modern_combobox(cb_model)
 
-        card_spec = ctk.CTkFrame(f_left_inner, fg_color="#313131", corner_radius=12, border_width=1, border_color="#3b3b3b")
-        card_spec.pack(fill="x", pady=(0, 10))
-        ctk.CTkLabel(card_spec, text="Specificații", font=("Segoe UI", 13, "bold")).pack(anchor="w", padx=12, pady=(10, 4))
-        ctk.CTkLabel(card_spec, text="Tip Toc", font=("Segoe UI", 11, "bold"), text_color="#CFCFCF").pack(anchor="w", padx=12, pady=(0, 6))
+        sec_toc_decor = _UsiExteriorCollapsibleSection(
+            f_left_inner, "Specificații Toc și Decor", start_open=True
+        )
+        sec_toc_decor.pack(fill="x", pady=(0, 10))
+        b_td = sec_toc_decor.body
+        ctk.CTkLabel(b_td, text="Tip Toc", font=("Segoe UI", 11, "bold"), text_color="#CFCFCF").pack(anchor="w", padx=12, pady=(0, 6))
         cb_toc = ctk.CTkComboBox(
-            card_spec,
+            b_td,
             width=780,
             values=list(USI_EXTERIOR_TOC_LABELS),
             state="normal" if not ro else "disabled",
@@ -4687,60 +4783,35 @@ class AplicatieOfertare(ctk.CTk):
         )
         cb_toc.pack(fill="x", padx=12, pady=(0, 8))
         self._style_modern_combobox(cb_toc)
-        ctk.CTkLabel(card_spec, text="Decor (manual)", font=("Segoe UI", 11, "bold"), text_color="#CFCFCF").pack(
+        ctk.CTkLabel(b_td, text="Decor (manual)", font=("Segoe UI", 11, "bold"), text_color="#CFCFCF").pack(
             anchor="w", padx=12, pady=(2, 6)
         )
-        entry_decor = ctk.CTkEntry(card_spec, width=780, placeholder_text="Introduceți decorul...")
+        entry_decor = ctk.CTkEntry(b_td, width=780, placeholder_text="Introduceți decorul...")
         entry_decor.pack(fill="x", padx=12, pady=(0, 10))
         self._style_modern_entry(entry_decor)
         entry_decor.bind("<KeyRelease>", self._on_usi_exterior_decor_change, add="+")
 
-        card_bara = ctk.CTkFrame(f_left_inner, fg_color="#313131", corner_radius=12, border_width=1, border_color="#3b3b3b")
-        card_bara.pack(fill="x", pady=(0, 10))
-        ctk.CTkLabel(
-            card_bara,
-            text="Bară trăgătoare",
-            font=("Segoe UI", 13, "bold"),
-            text_color="#ECEFF1",
-        ).pack(anchor="w", padx=12, pady=(10, 6))
-        f_bara_model_shell = ctk.CTkFrame(
-            card_bara,
-            fg_color="#1e2a1f",
-            corner_radius=10,
-            border_width=2,
-            border_color=GREEN_SOFT,
+        sec_bara = _UsiExteriorCollapsibleSection(f_left_inner, "Bară Trăgătoare", start_open=True)
+        sec_bara.pack(fill="x", pady=(0, 10))
+        b_br = sec_bara.body
+        ctk.CTkLabel(b_br, text="Model bară (selectare)", font=("Segoe UI", 11, "bold"), text_color="#CFCFCF").pack(
+            anchor="w", padx=12, pady=(0, 6)
         )
-        f_bara_model_shell.pack(fill="x", padx=12, pady=(0, 10))
-        ctk.CTkLabel(
-            f_bara_model_shell,
-            text="Model bară (selectare)",
-            font=("Segoe UI", 10, "bold"),
-            text_color="#9CCC9C",
-        ).pack(anchor="w", padx=12, pady=(10, 4))
         cb_bara_model = ctk.CTkComboBox(
-            f_bara_model_shell,
-            width=720,
+            b_br,
+            width=780,
             values=[USI_EXTERIOR_BARA_MODEL_NONE],
             state="normal" if not ro else "disabled",
             command=lambda _c: self._usi_bare_on_model_change(),
         )
-        cb_bara_model.pack(fill="x", padx=12, pady=(0, 6))
+        cb_bara_model.pack(fill="x", padx=12, pady=(0, 10))
         cb_bara_model.set(USI_EXTERIOR_BARA_MODEL_NONE)
         self._style_modern_combobox(cb_bara_model)
-        lbl_bara_model_display = ctk.CTkLabel(
-            f_bara_model_shell,
-            text="— FĂRĂ BARĂ —",
-            font=("Segoe UI", 16, "bold"),
-            text_color="#757575",
-            anchor="w",
-            justify="left",
-        )
-        lbl_bara_model_display.pack(fill="x", padx=12, pady=(4, 12))
-        ctk.CTkLabel(card_bara, text="Lungime bară", font=("Segoe UI", 11, "bold"), text_color="#CFCFCF").pack(
+        ctk.CTkLabel(b_br, text="Lungime bară", font=("Segoe UI", 11, "bold"), text_color="#CFCFCF").pack(
             anchor="w", padx=12, pady=(0, 6)
         )
         cb_bara_lungime = ctk.CTkComboBox(
-            card_bara,
+            b_br,
             width=780,
             values=[USI_EXTERIOR_BARA_PLACEHOLDER],
             state="disabled",
@@ -4749,11 +4820,11 @@ class AplicatieOfertare(ctk.CTk):
         cb_bara_lungime.pack(fill="x", padx=12, pady=(0, 6))
         cb_bara_lungime.set(USI_EXTERIOR_BARA_PLACEHOLDER)
         self._style_modern_combobox(cb_bara_lungime)
-        ctk.CTkLabel(card_bara, text="Decor bară", font=("Segoe UI", 11, "bold"), text_color="#CFCFCF").pack(
+        ctk.CTkLabel(b_br, text="Decor bară", font=("Segoe UI", 11, "bold"), text_color="#CFCFCF").pack(
             anchor="w", padx=12, pady=(0, 6)
         )
         cb_bara_decor = ctk.CTkComboBox(
-            card_bara,
+            b_br,
             width=780,
             values=[USI_EXTERIOR_BARA_PLACEHOLDER],
             state="disabled",
@@ -4762,6 +4833,12 @@ class AplicatieOfertare(ctk.CTk):
         cb_bara_decor.pack(fill="x", padx=12, pady=(0, 12))
         cb_bara_decor.set(USI_EXTERIOR_BARA_PLACEHOLDER)
         self._style_modern_combobox(cb_bara_decor)
+
+        sec_acc = _UsiExteriorCollapsibleSection(f_left_inner, "Accesorii", start_open=True)
+        sec_acc.pack(fill="x", pady=(0, 10))
+        scroll_acc = ctk.CTkScrollableFrame(sec_acc.body, fg_color="#2b2b2b", height=120)
+        scroll_acc.pack(fill="both", expand=True, padx=8, pady=(0, 10))
+        _force_ctk_native_dark_bg(scroll_acc, "#2b2b2b")
 
         card_dim = ctk.CTkFrame(f_left_inner, fg_color="#313131", corner_radius=12, border_width=1, border_color="#3b3b3b")
         card_dim.pack(fill="x", pady=(0, 8))
@@ -4791,39 +4868,31 @@ class AplicatieOfertare(ctk.CTk):
         f_right.pack_propagate(False)
         ctk.CTkLabel(
             f_right,
-            text="Rezumat Configurație",
+            text="Coș configurare",
             font=("Segoe UI", 14, "bold"),
-            text_color="#ECEFF1",
+            text_color="#2E7D32",
         ).pack(anchor="w", padx=12, pady=(12, 6))
-
-        lbl_sum_model = ctk.CTkLabel(
+        cart_scroll = ctk.CTkScrollableFrame(f_right, fg_color="#2b2b2b", height=200)
+        cart_scroll.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+        _force_ctk_native_dark_bg(cart_scroll, "#2b2b2b")
+        lbl_cart_total = ctk.CTkLabel(
             f_right,
-            text="Model: —",
-            font=("Segoe UI", 11),
-            text_color="#aaaaaa",
+            text="TOTAL: — lei (TVA inclus)",
+            font=("Segoe UI", 13, "bold"),
+            text_color="#2E7D32",
             anchor="w",
             justify="left",
         )
-        lbl_sum_model.pack(fill="x", padx=12, pady=4)
-        lbl_sum_toc = ctk.CTkLabel(
+        lbl_cart_total.pack(fill="x", padx=12, pady=(4, 4))
+        lbl_sum_pret = ctk.CTkLabel(
             f_right,
-            text="Tip toc: —",
-            font=("Segoe UI", 11),
-            text_color="#aaaaaa",
+            text="Preț EUR (echivalent): — €",
+            font=("Segoe UI", 10),
+            text_color="#888888",
             anchor="w",
             justify="left",
         )
-        lbl_sum_toc.pack(fill="x", padx=12, pady=4)
-        lbl_sum_bara = ctk.CTkLabel(
-            f_right,
-            text="Bară: —",
-            font=("Segoe UI", 11),
-            text_color="#aaaaaa",
-            anchor="w",
-            justify="left",
-            wraplength=560,
-        )
-        lbl_sum_bara.pack(fill="x", padx=12, pady=4)
+        lbl_sum_pret.pack(fill="x", padx=12, pady=(0, 6))
         lbl_sum_dims = ctk.CTkLabel(
             f_right,
             text="Dimensiuni calculate:\n—",
@@ -4834,15 +4903,6 @@ class AplicatieOfertare(ctk.CTk):
         )
         lbl_sum_dims.pack(fill="x", padx=12, pady=(8, 4))
         ctk.CTkFrame(f_right, height=1, fg_color="#4A4A4A").pack(fill="x", padx=12, pady=(8, 8))
-        lbl_sum_pret = ctk.CTkLabel(
-            f_right,
-            text="Preț EUR: — €   |   Preț RON cu TVA: — RON",
-            font=("Segoe UI", 12, "bold"),
-            text_color="#2E7D32",
-            anchor="w",
-            justify="left",
-        )
-        lbl_sum_pret.pack(fill="x", padx=12, pady=(10, 6))
 
         btn_add = ctk.CTkButton(
             f_right,
@@ -4868,13 +4928,12 @@ class AplicatieOfertare(ctk.CTk):
             "cb_bara_model": cb_bara_model,
             "cb_bara_lungime": cb_bara_lungime,
             "cb_bara_decor": cb_bara_decor,
-            "lbl_bara_model_display": lbl_bara_model_display,
             "entry_decor": entry_decor,
             "entry_w": entry_w,
             "entry_h": entry_h,
-            "lbl_model": lbl_sum_model,
-            "lbl_toc": lbl_sum_toc,
-            "lbl_bara": lbl_sum_bara,
+            "cart_scroll": cart_scroll,
+            "lbl_cart_total": lbl_cart_total,
+            "scroll_accesorii": scroll_acc,
             "lbl_dims": lbl_sum_dims,
             "lbl_pret": lbl_sum_pret,
             "btn_add": btn_add,
@@ -4971,26 +5030,17 @@ class AplicatieOfertare(ctk.CTk):
         cod = (cb_bm.get() or "").strip() if cb_bm is not None else ""
         if not cod or cod == USI_EXTERIOR_BARA_MODEL_NONE:
             return ""
-        lung = (cb_bl.get() or "").strip() if cb_bl is not None else ""
+        lung_disp = (cb_bl.get() or "").strip() if cb_bl is not None else ""
         dec = (cb_bd.get() or "").strip() if cb_bd is not None else ""
-        if lung in (USI_EXTERIOR_BARA_PLACEHOLDER, "") or dec in (USI_EXTERIOR_BARA_PLACEHOLDER, ""):
+        if lung_disp in (USI_EXTERIOR_BARA_PLACEHOLDER, "") or dec in (USI_EXTERIOR_BARA_PLACEHOLDER, ""):
             return ""
-        return (mtx.get(cod, {}).get(lung, {}) or {}).get(dec, "")
-
-    def _sync_lbl_bara_model_display(self) -> None:
-        """Actualizează caseta cu modelul barei (majuscule)."""
-        w = getattr(self, "_usi_exterior_widgets", None)
-        if not w:
-            return
-        lbl = w.get("lbl_bara_model_display")
-        cb_bm = w.get("cb_bara_model")
-        if lbl is None or cb_bm is None:
-            return
-        cod = (cb_bm.get() or "").strip()
-        if not cod or cod == USI_EXTERIOR_BARA_MODEL_NONE:
-            lbl.configure(text="— FĂRĂ BARĂ —", text_color="#757575")
-        else:
-            lbl.configure(text=cod.upper(), text_color="#A5D6A7")
+        chei_lung = list((mtx.get(cod, {}) or {}).keys())
+        lung_db = _lungime_bara_key_pentru_afisare(lung_disp, chei_lung) or (
+            lung_disp if lung_disp in chei_lung else ""
+        )
+        if not lung_db:
+            return ""
+        return (mtx.get(cod, {}).get(lung_db, {}) or {}).get(dec, "")
 
     def _usi_bare_on_model_change(self, _event=None) -> None:
         w = getattr(self, "_usi_exterior_widgets", None)
@@ -5012,10 +5062,11 @@ class AplicatieOfertare(ctk.CTk):
             self._on_usi_exterior_selection_change()
             return
         lungs = sorted(mtx.get(cod, {}).keys(), key=_lungime_bara_sort_key)
+        lungs_ui = [_lungime_bara_label_afisare(x) for x in lungs]
         if cb_bl is not None:
-            if lungs:
-                cb_bl.configure(values=lungs, state="normal" if not ro else "disabled")
-                cb_bl.set(lungs[0])
+            if lungs_ui:
+                cb_bl.configure(values=lungs_ui, state="normal" if not ro else "disabled")
+                cb_bl.set(lungs_ui[0])
             else:
                 cb_bl.configure(values=[USI_EXTERIOR_BARA_PLACEHOLDER], state="disabled")
                 cb_bl.set(USI_EXTERIOR_BARA_PLACEHOLDER)
@@ -5034,18 +5085,23 @@ class AplicatieOfertare(ctk.CTk):
         cb_bl = w.get("cb_bara_lungime")
         cb_bd = w.get("cb_bara_decor")
         cod = (cb_bm.get() or "").strip() if cb_bm is not None else ""
-        lung = (cb_bl.get() or "").strip() if cb_bl is not None else ""
+        lung_disp = (cb_bl.get() or "").strip() if cb_bl is not None else ""
+        chei_lung = list(mtx.get(cod, {}).keys())
+        lung_db = _lungime_bara_key_pentru_afisare(lung_disp, chei_lung) or (
+            lung_disp if lung_disp in chei_lung else ""
+        )
         if (
             not cod
             or cod == USI_EXTERIOR_BARA_MODEL_NONE
-            or lung in (USI_EXTERIOR_BARA_PLACEHOLDER, "")
+            or lung_disp in (USI_EXTERIOR_BARA_PLACEHOLDER, "")
+            or not lung_db
         ):
             if cb_bd is not None:
                 cb_bd.configure(values=[USI_EXTERIOR_BARA_PLACEHOLDER], state="disabled")
                 cb_bd.set(USI_EXTERIOR_BARA_PLACEHOLDER)
             self._on_usi_exterior_selection_change()
             return
-        decs = sorted((mtx.get(cod, {}).get(lung, {}) or {}).keys(), key=str.casefold)
+        decs = sorted((mtx.get(cod, {}).get(lung_db, {}) or {}).keys(), key=str.casefold)
         if cb_bd is not None:
             if decs:
                 cb_bd.configure(values=decs, state="normal" if not ro else "disabled")
@@ -5057,6 +5113,68 @@ class AplicatieOfertare(ctk.CTk):
 
     def _usi_bare_on_decor_change(self, _event=None) -> None:
         self._on_usi_exterior_selection_change()
+
+    def _usi_ext_eur_to_ron_tva(self, eur: float) -> float:
+        try:
+            return round(float(eur) * float(self.curs_euro) * (1 + float(self.tva_procent) / 100.0), 2)
+        except Exception:
+            return 0.0
+
+    def _usi_exterior_redraw_cart_lines(
+        self,
+        w: dict,
+        *,
+        model_label: str,
+        row_m: dict | None,
+        toc_lbl: str,
+        pret_baza: float,
+        pret_adaos: float,
+        pret_bara: float,
+        total_eur: float,
+        total_ron_tva: float,
+        bara_line_ok: bool,
+        bara_combo_display: str,
+    ) -> None:
+        cart = w.get("cart_scroll")
+        lbl_tot = w.get("lbl_cart_total")
+        if cart is None:
+            return
+        for ch in cart.winfo_children():
+            ch.destroy()
+        font_line = ("Segoe UI", 11)
+        col_muted = "#CFCFCF"
+        col_hi = "#A5D6A7"
+
+        def _line(text: str, *, color: str = col_muted) -> None:
+            ctk.CTkLabel(
+                cart,
+                text=text,
+                font=font_line,
+                text_color=color,
+                anchor="w",
+                justify="left",
+                wraplength=540,
+            ).pack(fill="x", padx=8, pady=3)
+
+        if not row_m or not (model_label or "").strip() or model_label.startswith("(") or model_label == "Se încarcă…":
+            _line("Selectați un model de ușă din listă.", color="#888888")
+        else:
+            r_baza = self._usi_ext_eur_to_ron_tva(pret_baza)
+            _line(f"Ușă exterior ({model_label}): {r_baza:.2f} lei (TVA inclus)", color=col_muted)
+            r_toc = self._usi_ext_eur_to_ron_tva(pret_adaos)
+            _line(f"Tip toc ({toc_lbl}): {r_toc:.2f} lei (TVA inclus)", color=col_muted)
+            if bara_line_ok and pret_bara > 0:
+                r_br = self._usi_ext_eur_to_ron_tva(pret_bara)
+                short = (bara_combo_display or "—").replace("  |  ", " · ")
+                _line(f"Bară trăgătoare ({short}): {r_br:.2f} lei (TVA inclus)", color=col_hi)
+            else:
+                _line(f"Bară trăgătoare: {0.0:.2f} lei (TVA inclus)", color="#757575")
+
+        if lbl_tot is not None:
+            lbl_tot.configure(text=f"TOTAL: {total_ron_tva:.2f} lei (TVA inclus)")
+        lp = w.get("lbl_pret")
+        if lp is not None:
+            lp.configure(text=f"Preț EUR (echivalent): {total_eur:.2f} €")
 
     def _on_usi_exterior_selection_change(self) -> None:
         w = getattr(self, "_usi_exterior_widgets", None)
@@ -5087,7 +5205,8 @@ class AplicatieOfertare(ctk.CTk):
             row_t = self._usi_ext_find_model_toc_row(self._usi_exterior_modele_rows, lab, toc_lbl)
             pret_adaos = self._usi_ext_pret_adaos_toc(row_t)
         pret_bara = 0.0
-        bara_txt = "—"
+        bara_combo_display = ""
+        bara_line_ok = False
         fk_b = self._usi_bare_resolve_fk()
         if fk_b:
             row_b = next(
@@ -5110,7 +5229,8 @@ class AplicatieOfertare(ctk.CTk):
                     "",
                     USI_EXTERIOR_BARA_PLACEHOLDER,
                 ):
-                    bara_txt = f"{bc.upper()} · {bl.upper()} · {bd.upper()}  |  {pret_bara:.2f} €"
+                    bara_combo_display = f"{bc.upper()} · {bl.upper()} · {bd.upper()}"
+                    bara_line_ok = True
         total = round(pret_baza + pret_adaos + pret_bara, 2)
 
         dims = self._usi_ext_collect_dims(row_m)
@@ -5157,22 +5277,53 @@ class AplicatieOfertare(ctk.CTk):
             pass
 
         total_ron_tva = round(total * float(self.curs_euro) * (1 + float(self.tva_procent) / 100.0), 2)
-        w["lbl_model"].configure(text=f"Model: {lab if row_m else '—'}")
-        w["lbl_toc"].configure(text=f"Tip toc: {toc_lbl}")
-        lb_b = w.get("lbl_bara")
-        if lb_b is not None:
-            lb_b.configure(
-                text=f"Bară: {bara_txt}",
-                text_color="#81c784" if pret_bara > 0 else "#aaaaaa",
-            )
-        w["lbl_dims"].configure(text="Dimensiuni calculate:\n" + "\n".join(lines))
-        w["lbl_pret"].configure(
-            text=(
-                f"Preț EUR: {total:.2f} €   |   "
-                f"Preț RON cu TVA: {total_ron_tva:.2f} RON"
-            )
+        self._usi_exterior_redraw_cart_lines(
+            w,
+            model_label=lab,
+            row_m=row_m,
+            toc_lbl=toc_lbl,
+            pret_baza=pret_baza,
+            pret_adaos=pret_adaos,
+            pret_bara=pret_bara,
+            total_eur=total,
+            total_ron_tva=total_ron_tva,
+            bara_line_ok=bara_line_ok,
+            bara_combo_display=bara_combo_display,
         )
-        self._sync_lbl_bara_model_display()
+        w["lbl_dims"].configure(text="Dimensiuni calculate:\n" + "\n".join(lines))
+
+    def _usi_exterior_collect_accesorii_cos_items(self, w: dict) -> list[dict]:
+        """Checkbox-uri bifate din secțiunea Accesorii: text + `_usi_exterior_pret_eur` (EUR fără TVA)."""
+        scroll = w.get("scroll_accesorii")
+        if scroll is None:
+            return []
+        out: list[dict] = []
+        for ch in scroll.winfo_children():
+            if not isinstance(ch, ctk.CTkCheckBox):
+                continue
+            try:
+                on = bool(ch.get())
+            except Exception:
+                on = False
+            if not on:
+                continue
+            label = (ch.cget("text") or "").strip()
+            if not label:
+                continue
+            try:
+                pret = float(getattr(ch, "_usi_exterior_pret_eur", 0) or 0)
+            except (TypeError, ValueError):
+                pret = 0.0
+            if pret < 0:
+                continue
+            try:
+                q = int(getattr(ch, "_usi_exterior_qty", 1) or 1)
+            except (TypeError, ValueError):
+                q = 1
+            if q < 1:
+                q = 1
+            out.append({"nume": label, "pret_eur": pret, "qty": q})
+        return out
 
     def _adauga_usi_exterior_in_cos(self) -> None:
         if getattr(self, "_win_oferta_readonly", False):
@@ -5226,35 +5377,73 @@ class AplicatieOfertare(ctk.CTk):
             bc = (cb_bm.get() or "").strip() if cb_bm else ""
             bl = (cb_bl.get() or "").strip() if cb_bl else ""
             bd = (cb_bd.get() or "").strip() if cb_bd else ""
-            if bc and bl and bd:
+            if (
+                bc
+                and bl
+                and bd
+                and bc != USI_EXTERIOR_BARA_MODEL_NONE
+                and bl != USI_EXTERIOR_BARA_PLACEHOLDER
+                and bd != USI_EXTERIOR_BARA_PLACEHOLDER
+            ):
                 bara_combo = f"{bc} · {bl} · {bd}"
         total = round(pret_baza + pret_adaos + pret_bara, 2)
         if total <= 0:
             self.afiseaza_mesaj("Atenție", "Prețul calculat este 0. Verifică datele din tabelul `usi_exterioare`.", "#7a1a1a")
             return
         decor_txt = (w.get("entry_decor").get() or "").strip().upper() if w.get("entry_decor") is not None else ""
-        parts_upper: list[str] = [f"USA EXTERIOR {lab.upper()}", f"TOC {toc_lbl.upper()}"]
+        pret_usa_toc = round(pret_baza + pret_adaos, 2)
+        if pret_usa_toc <= 0:
+            self.afiseaza_mesaj("Atenție", "Prețul ușă + toc este 0. Verifică datele din tabelul `usi_exterioare`.", "#7a1a1a")
+            return
+        acc_payloads = self._usi_exterior_collect_accesorii_cos_items(w)
+        gid = uuid.uuid4().hex[:16]
+        nume_usa_parts = [f"USA EXTERIOR {lab.upper()}", f"TOC {toc_lbl.upper()}"]
         if decor_txt:
-            parts_upper.append(f"DECOR UȘĂ {decor_txt}")
-        if bara_combo and pret_bara > 0:
-            parts_upper.append(f"BARĂ {bara_combo.upper()} — {pret_bara:.2f} EUR")
-        nume = " — ".join(parts_upper)
+            nume_usa_parts.append(f"DECOR UȘĂ {decor_txt}")
+        nume_usa_toc = " — ".join(nume_usa_parts)
         self.cos_cumparaturi.append(
             {
-                "nume": nume,
-                "pret_eur": total,
+                "nume": nume_usa_toc,
+                "pret_eur": pret_usa_toc,
                 "qty": 1,
                 "tip": "usi",
                 "furnizor": "Exterior",
                 "usi_exterior_kit": True,
+                "usi_exterior_group_id": gid,
                 "usi_exterior_model": lab,
                 "usi_exterior_toc": toc_lbl,
                 "usi_exterior_decor": decor_txt,
-                "usi_exterior_bara": bara_combo.upper() if bara_combo else "",
-                "usi_exterior_bara_key": bara_key,
-                "usi_exterior_bara_pret_eur": pret_bara,
+                "usi_exterior_bara": "",
+                "usi_exterior_bara_key": "",
+                "usi_exterior_bara_pret_eur": 0,
             }
         )
+        if pret_bara > 0 and bara_combo:
+            self.cos_cumparaturi.append(
+                {
+                    "nume": f"BARĂ TRĂGĂTOARE — {bara_combo.upper()}",
+                    "pret_eur": pret_bara,
+                    "qty": 1,
+                    "tip": "accesorii",
+                    "furnizor": "Exterior",
+                    "usi_exterior_bara_line": True,
+                    "usi_exterior_group_id": gid,
+                    "usi_exterior_model": lab,
+                    "usi_exterior_bara_key": bara_key,
+                }
+            )
+        for ap in acc_payloads:
+            self.cos_cumparaturi.append(
+                {
+                    "nume": (ap.get("nume") or "").strip(),
+                    "pret_eur": float(ap.get("pret_eur") or 0),
+                    "qty": int(ap.get("qty") or 1),
+                    "tip": "accesorii",
+                    "furnizor": "Exterior",
+                    "usi_exterior_accesoriu": True,
+                    "usi_exterior_group_id": gid,
+                }
+            )
         self.refresh_cos(getattr(self, "_win_oferta_readonly", False))
         self._inchide_configurator_usi_exterior()
 
@@ -6079,7 +6268,10 @@ class AplicatieOfertare(ctk.CTk):
             cols = mapped_cols
             w["_toc_tip_display_to_raw"] = display_to_raw
         if cols:
-            valori = cols
+            if titlu == "Tocuri" and furnizor == "Erkado":
+                valori = sorted({tip_toc_db_to_ui_erkado(x) for x in cols})
+            else:
+                valori = cols
         else:
             valori = ["Nu există produse"] if is_parchet else ["Nu există produse pentru acest furnizor"]
         # Salvăm lista completă și placeholder pentru filtrare și reset
@@ -6247,6 +6439,9 @@ class AplicatieOfertare(ctk.CTk):
         if titlu == "Manere":
             var_manere = self.config_widgets[titlu].get("furnizor_manere")
             furnizor = var_manere.get() if var_manere else "Stoc"
+        tip_col_query = col
+        if titlu == "Tocuri" and furnizor == "Erkado":
+            tip_col_query = tip_toc_ui_to_db_erkado(col)
         if titlu == "Tocuri":
             col = self.config_widgets[titlu].get("_toc_tip_display_to_raw", {}).get(col, col)
             self.config_widgets[titlu]["_tip_toc"] = col
@@ -6268,7 +6463,7 @@ class AplicatieOfertare(ctk.CTk):
             w["buton"].configure(state="disabled")
             return
         modele = get_modele_produse(
-            self.cursor, titlu, furnizor, col,
+            self.cursor, titlu, furnizor, tip_col_query,
             use_tip_toc=(titlu == "Tocuri"),
         )
         ph_mod = "Alege Cod Produs" if titlu in self.CATEGORII_PARCHET else "Alege Model"
@@ -6367,7 +6562,7 @@ class AplicatieOfertare(ctk.CTk):
             # La Tocuri Stoc: decor/finisaj se preia automat din ușa asociată;
             # prețul se ia strict pe (tip_toc, dimensiune).
             # La Tocuri Erkado: rămâne selecție pe perechi (decor, finisaj).
-            tip_toc = col
+            tip_toc = tip_toc_ui_to_db_erkado(col) if furnizor == "Erkado" else col
             dimensiune = mod or ""
             furnizor = self.var_furnizor_global.get()
             w = self.config_widgets[titlu]
@@ -7205,9 +7400,11 @@ class AplicatieOfertare(ctk.CTk):
 
         usa_item = usi_match[idx_next]
         usa_decor = (usa_item.get("usa_decor") or "").strip()
-        usa_finisaj = (usa_item.get("usa_finisaj") or "").strip()
+        if usa_decor.upper() == "TEXT":
+            usa_decor = ""
         if not usa_decor:
             usa_decor = (usa_item.get("usa_decor_display") or "").strip()
+        usa_finisaj = (usa_item.get("usa_finisaj") or "").strip()
         if not usa_finisaj:
             nume_usa = usa_item.get("nume") or ""
             if "(" in nume_usa and ")" in nume_usa:
@@ -7576,7 +7773,7 @@ class AplicatieOfertare(ctk.CTk):
             except (ValueError, IndexError):
                 usa_decor_sel = dec_display
                 usa_finisaj_sel = sel
-            # Erkado: în listă/PDF afișăm decorul (text) + finisajul din listă (CPL, PREMIUM, GREKO, …)
+            # Erkado: decorul din câmpul text + finisaj din listă; în BD perechea poate avea «TEXT».
             if furnizor == "Erkado":
                 model_erk = (w["decor"].get() or "").strip()
                 fin_e = (w["model"].get() or "").strip()
@@ -7606,7 +7803,8 @@ class AplicatieOfertare(ctk.CTk):
             return
 
         if tip == "tocuri":
-            tip_toc = w["colectie"].get()
+            tip_toc_raw = w["colectie"].get()
+            tip_toc = tip_toc_ui_to_db_erkado(tip_toc_raw) if furnizor == "Erkado" else tip_toc_raw
             dim = w["model"].get()
             # Forțăm decor/finisaj toc conform ușii "corespunzătoare" (pairing pe ordinea adăugării).
             if self._is_safe_mode_enabled():
@@ -7622,14 +7820,26 @@ class AplicatieOfertare(ctk.CTk):
                         self.on_decor_select("Tocuri")
 
             tip_norm = (tip_toc or "").strip().lower()
-            if "reglabil" in tip_norm:
+            if furnizor == "Erkado":
+                parte_toc = erkado_parte_toc_cu_dimensiune(tip_toc, dim)
+            elif "reglabil" in tip_norm:
                 parte_toc = f"Toc Reglabil {dim}".strip()
             else:
                 parte_toc = f"Toc {tip_toc} Drept {dim}" if (tip_toc and dim) else "Toc"
-            toc_display = w["decor"].get()
+            sel_from_dd = w["decor"].get()
             toc_decor = ""
-            toc_finisaj = toc_display
-            if furnizor in ("Stoc", "Erkado"):
+            toc_finisaj = ""
+            try:
+                values_dd = list(w["decor"].cget("values") or [])
+                pairs = w.get("decor_finisaj_pairs") or []
+                idx_dd = values_dd.index(sel_from_dd)
+                toc_decor, toc_finisaj = pairs[idx_dd]
+            except (ValueError, IndexError):
+                toc_decor, toc_finisaj = "", sel_from_dd
+            toc_display = sel_from_dd
+            if (toc_decor or "").strip().upper() == "TEXT":
+                toc_display = (toc_finisaj or "").strip() or sel_from_dd
+            if furnizor == "Stoc":
                 usi_match = [
                     i
                     for i in self.cos_cumparaturi
@@ -7643,7 +7853,36 @@ class AplicatieOfertare(ctk.CTk):
                 idx_next = len(tocuri_match)
                 if idx_next < len(usi_match):
                     usa_item = usi_match[idx_next]
-                    toc_decor = (usa_item.get("usa_decor") or usa_item.get("usa_decor_display") or "").strip()
+                    toc_decor = (usa_item.get("usa_decor") or "").strip()
+                    if toc_decor.upper() == "TEXT":
+                        toc_decor = ""
+                    if not toc_decor:
+                        toc_decor = (usa_item.get("usa_decor_display") or "").strip()
+                    toc_finisaj = (usa_item.get("usa_finisaj") or "").strip()
+                    if toc_decor and toc_finisaj:
+                        toc_display = f"{toc_decor} / {toc_finisaj}"
+                    else:
+                        toc_display = toc_decor or toc_finisaj or "Automat din usa"
+            elif furnizor == "Erkado":
+                # Același pairing ca la Stoc: decorul din ușa Erkado (introdus manual), nu placeholderul «TEXT» din catalog.
+                usi_match = [
+                    i
+                    for i in self.cos_cumparaturi
+                    if self._get_item_tip(i) == "usi" and self._get_furnizor_from_item(i) == furnizor
+                ]
+                tocuri_match = [
+                    i
+                    for i in self.cos_cumparaturi
+                    if self._get_item_tip(i) == "tocuri" and self._get_furnizor_from_item(i) == furnizor
+                ]
+                idx_next = len(tocuri_match)
+                if idx_next < len(usi_match):
+                    usa_item = usi_match[idx_next]
+                    toc_decor = (usa_item.get("usa_decor") or "").strip()
+                    if toc_decor.upper() == "TEXT":
+                        toc_decor = ""
+                    if not toc_decor:
+                        toc_decor = (usa_item.get("usa_decor_display") or "").strip()
                     toc_finisaj = (usa_item.get("usa_finisaj") or "").strip()
                     if furnizor == "Erkado":
                         toc_display = toc_decor or "—"
@@ -8064,68 +8303,24 @@ class AplicatieOfertare(ctk.CTk):
                 ).pack(side="right", padx=4)
                 f_price = ctk.CTkFrame(f_controls, fg_color="transparent")
                 f_price.pack(side="right", padx=8)
-                if item.get("usi_exterior_kit"):
-                    bar_e = float(item.get("usi_exterior_bara_pret_eur") or 0)
-                    ctk.CTkLabel(
-                        f_price,
-                        text=f"{pret_total_eur:.2f} EUR",
-                        font=("Segoe UI", 12, "bold"),
-                        text_color="#4ade80",
-                    ).pack(anchor="e")
-                    if bar_e > 0:
-                        ctk.CTkLabel(
-                            f_price,
-                            text=f"BARĂ {bar_e:.2f} EUR",
-                            font=("Segoe UI", 10, "bold"),
-                            text_color="#86efac",
-                        ).pack(anchor="e")
-                    ctk.CTkLabel(
-                        f_price,
-                        text=f"{pret_total_lei_cu_tva:.2f} LEI TVA",
-                        font=("Segoe UI", 11),
-                        text_color="#facc15",
-                    ).pack(anchor="e")
-                else:
-                    ctk.CTkLabel(
-                        f_price,
-                        text=f"{pret_total_lei_cu_tva:.2f} LEI (TVA inclus)",
-                        font=("Segoe UI", 12),
-                        text_color="#facc15",
-                    ).pack(anchor="e")
+                ctk.CTkLabel(
+                    f_price,
+                    text=f"{pret_total_lei_cu_tva:.2f} LEI (TVA inclus)",
+                    font=("Segoe UI", 12),
+                    text_color="#facc15",
+                ).pack(anchor="e")
             else:
                 ctk.CTkLabel(f_controls, text=f"Cantitate: {item['qty']} buc", font=("Segoe UI", 12)).pack(
                     side="left", padx=5
                 )
                 f_price_ro = ctk.CTkFrame(f_controls, fg_color="transparent")
                 f_price_ro.pack(side="right", padx=8)
-                if item.get("usi_exterior_kit"):
-                    bar_e = float(item.get("usi_exterior_bara_pret_eur") or 0)
-                    ctk.CTkLabel(
-                        f_price_ro,
-                        text=f"{pret_total_eur:.2f} EUR",
-                        font=("Segoe UI", 12, "bold"),
-                        text_color="#4ade80",
-                    ).pack(anchor="e")
-                    if bar_e > 0:
-                        ctk.CTkLabel(
-                            f_price_ro,
-                            text=f"BARĂ {bar_e:.2f} EUR",
-                            font=("Segoe UI", 10, "bold"),
-                            text_color="#86efac",
-                        ).pack(anchor="e")
-                    ctk.CTkLabel(
-                        f_price_ro,
-                        text=f"{pret_total_lei_cu_tva:.2f} LEI TVA",
-                        font=("Segoe UI", 11),
-                        text_color="#facc15",
-                    ).pack(anchor="e")
-                else:
-                    ctk.CTkLabel(
-                        f_price_ro,
-                        text=f"{pret_total_lei_cu_tva:.2f} LEI (TVA inclus)",
-                        font=("Segoe UI", 12),
-                        text_color="#facc15",
-                    ).pack(anchor="e")
+                ctk.CTkLabel(
+                    f_price_ro,
+                    text=f"{pret_total_lei_cu_tva:.2f} LEI (TVA inclus)",
+                    font=("Segoe UI", 12),
+                    text_color="#facc15",
+                ).pack(anchor="e")
             text_color = self._cos_row_title_text_color(row_accent)
             if text_color is None and is_dubla:
                 text_color = "#93c5fd"

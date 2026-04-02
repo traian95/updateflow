@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import threading
 import time
@@ -20,6 +21,73 @@ SCHEMA_VERSION_CURRENT = 9
 # Tocuri „Fix 90 MM” — prețuri EUR listă (fără TVA); conversia globală în LEI + TVA rămâne în ofertare.
 TOCURI_FIX90_TIP = "Fix 90 MM"
 TOCURI_FIX90_DIM = "90 MM"
+
+# Erkado: în baza de date rămâne „Reglabil” pentru compatibilitate; în UI se afișează denumirea extinsă.
+TOC_ERKADO_UI_REGLABIL_CU_FALT = "Toc Reglabil Usi cu Falt"
+TOC_ERKADO_DB_REGLABIL = "Reglabil"
+TOC_ERKADO_DB_REGLABIL_FARA_FALT = "Toc Reglabil Usi Fara Falt"
+
+
+def tip_toc_ui_to_db_erkado(ui: str) -> str:
+    s = (ui or "").strip()
+    if s == TOC_ERKADO_UI_REGLABIL_CU_FALT:
+        return TOC_ERKADO_DB_REGLABIL
+    return s
+
+
+def tip_toc_db_to_ui_erkado(db: str) -> str:
+    s = (db or "").strip()
+    if s == TOC_ERKADO_DB_REGLABIL:
+        return TOC_ERKADO_UI_REGLABIL_CU_FALT
+    return s
+
+
+def erkado_tip_toc_nume_part(tip_db: str) -> str:
+    """Fragment scurt pentru descrierea liniei în ofertă (Erkado), fără sufixul « Drept … »."""
+    t = (tip_db or "").strip()
+    if t == TOC_ERKADO_DB_REGLABIL:
+        return TOC_ERKADO_UI_REGLABIL_CU_FALT
+    if t == TOC_ERKADO_DB_REGLABIL_FARA_FALT or t.lower().startswith("toc "):
+        return t
+    return f"Toc {t}" if t else "Toc"
+
+
+def erkado_parte_toc_cu_dimensiune(tip_db: str, dimensiune: str) -> str:
+    """Denumire toc Erkado + dimensiune: «… Drept 135-155 MM»; la Fara Falt fără cuvântul «Drept»."""
+    pb = erkado_tip_toc_nume_part(tip_db)
+    dim = (dimensiune or "").strip()
+    if not dim:
+        return pb
+    if (tip_db or "").strip() == TOC_ERKADO_DB_REGLABIL_FARA_FALT:
+        return f"{pb} {dim}"
+    return f"{pb} Drept {dim}"
+
+
+def tip_toc_from_excel_cell(raw: str, furnizor: str) -> str:
+    """Normalizează textul din Excel la valorile `tip_toc` din tabela `produse`."""
+    s0 = (raw or "").strip()
+    s = s0.lower()
+    s_compact = re.sub(r"\s+", "", s)
+    furn = (furnizor or "").strip()
+    if not s:
+        return "Fix"
+    if furn == "Erkado":
+        if "fara falt" in s or "fără falt" in s0.lower():
+            return TOC_ERKADO_DB_REGLABIL_FARA_FALT
+        if "fix90mm" in s_compact or "fix 90" in s or s_compact == "fix90":
+            return TOCURI_FIX90_TIP
+        if "reglabil" in s or "cu falt" in s or s0 == TOC_ERKADO_UI_REGLABIL_CU_FALT:
+            return TOC_ERKADO_DB_REGLABIL
+        if "fix" in s:
+            return "Fix"
+        return s0 if s0 else "Fix"
+    if "fix90mm" in s_compact or "fix 90" in s or s_compact == "fix90":
+        return TOCURI_FIX90_TIP
+    if "reglabil" in s:
+        return TOC_ERKADO_DB_REGLABIL
+    if "fix" in s:
+        return "Fix"
+    return s0 if s0 else "Fix"
 
 
 def _norm_toc_dimensiune(d: str) -> str:
@@ -103,6 +171,44 @@ SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 
 _LOCK = threading.RLock()
 _SUPA: Optional[Client] = None
+_SUPA_WRITE: Optional[Client] = None
+
+
+def _service_role_key() -> str:
+    k = (os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    if k:
+        return k
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for rel in ("supabase_service_role.key",):
+        p = os.path.join(root, rel)
+        if os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    return f.read().strip()
+            except OSError:
+                pass
+    appdata = os.environ.get("APPDATA", "")
+    if appdata:
+        p = os.path.join(appdata, "Soft Ofertare Usi", "supabase_service_role.key")
+        if os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    return f.read().strip()
+            except OSError:
+                pass
+    return ""
+
+
+def _get_supabase_client_for_write() -> Client:
+    """INSERT/DELETE pe «produse»: necesita service role daca RLS blocheaza cheia anonima."""
+    global _SUPA_WRITE
+    key = _service_role_key()
+    if key:
+        with _LOCK:
+            if _SUPA_WRITE is None:
+                _SUPA_WRITE = create_client(SUPABASE_URL.strip(), key)
+            return _SUPA_WRITE
+    return _get_supabase_client()
 _CACHE: dict[str, list[dict[str, Any]]] = {}
 _CACHE_TS: dict[str, datetime] = {}
 _CACHE_TTL_S = 20
@@ -833,6 +939,8 @@ def get_colectii_produse(cursor, categorie: str, furnizor: str, use_tip_toc: boo
     out = [x for x in sorted({str(r.get(k) or "") for r in rows}) if x]
     if categorie == "Tocuri" and use_tip_toc and furnizor in ("Stoc", "Erkado") and TOCURI_FIX90_TIP not in out:
         out = sorted(set(out) | {TOCURI_FIX90_TIP})
+    if categorie == "Tocuri" and use_tip_toc and furnizor == "Erkado" and TOC_ERKADO_DB_REGLABIL_FARA_FALT not in out:
+        out = sorted(set(out) | {TOC_ERKADO_DB_REGLABIL_FARA_FALT})
     return out
 
 
@@ -1083,9 +1191,29 @@ def get_produse_for_admin_list(cursor, furnizor: str, categorie: str):
     ]
 
 
+def _next_produse_id() -> int:
+    """Tabela «produse» foloseste id numeric explicit (fara serial implicit la insert API)."""
+    try:
+        r = (
+            _get_supabase_client_for_write()
+            .table(TABLE_PRODUSE)
+            .select("id")
+            .order("id", desc=True)
+            .limit(1)
+            .execute()
+            .data
+        )
+        if not r:
+            return 1
+        return int(r[0]["id"]) + 1
+    except Exception:
+        return 1
+
+
 def insert_produs(conn, cursor, categorie: str, furnizor: str, colectie: str, model: str, decor: str, finisaj: str, tip_toc: str, dimensiune: str, pret: float):
-    _get_supabase_client().table(TABLE_PRODUSE).insert(
+    _get_supabase_client_for_write().table(TABLE_PRODUSE).insert(
         {
+            "id": _next_produse_id(),
             "categorie": categorie,
             "furnizor": furnizor,
             "colectie": colectie,
@@ -1095,13 +1223,22 @@ def insert_produs(conn, cursor, categorie: str, furnizor: str, colectie: str, mo
             "tip_toc": tip_toc,
             "dimensiune": dimensiune,
             "pret": pret,
+            "este_izolatie": 0,
         }
     ).execute()
     _invalidate(TABLE_PRODUSE)
 
 
 def delete_produs(conn, cursor, prod_id: int):
-    _get_supabase_client().table(TABLE_PRODUSE).delete().eq("id", prod_id).execute()
+    _get_supabase_client_for_write().table(TABLE_PRODUSE).delete().eq("id", prod_id).execute()
+    _invalidate(TABLE_PRODUSE)
+
+
+def delete_tocuri_erkado_fara_falt_catalog() -> None:
+    """Sterge din catalog toate liniile Tocuri / Erkado cu tip_toc «Fara Falt» (inainte de reimport CSV)."""
+    _get_supabase_client_for_write().table(TABLE_PRODUSE).delete().eq("categorie", "Tocuri").eq("furnizor", "Erkado").eq(
+        "tip_toc", TOC_ERKADO_DB_REGLABIL_FARA_FALT
+    ).execute()
     _invalidate(TABLE_PRODUSE)
 
 

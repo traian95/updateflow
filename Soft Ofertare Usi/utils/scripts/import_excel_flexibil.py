@@ -22,12 +22,13 @@ import sys
 
 import pandas as pd
 
-# Calea către proiect și DB (aceeași logică ca în aplicație)
-DIR_PROIECT = os.path.dirname(os.path.abspath(__file__))
+# Rădăcina proiectului «Soft Ofertare Usi» (folderul care conține pachetul ofertare)
+DIR_PROIECT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, DIR_PROIECT)
 
 from ofertare.config import get_database_path
 from ofertare.db import init_schema, open_db
+from ofertare.db_cloud import tip_toc_from_excel_cell
 
 # Mapare: nume posibile în Excel (lowercase) -> câmp în baza de date
 COLOANE_EXCEL_TO_DB = {
@@ -53,6 +54,7 @@ COLOANE_EXCEL_TO_DB = {
     "price": "pret",
     "eur": "pret",
     "pret lista": "pret",
+    "pret lista (eur)": "pret",
     "pret lista eur fara tva/mp": "pret",
     "pret lista eur fara tva": "pret",
     "pret eur/mp": "pret",
@@ -171,7 +173,7 @@ def main() -> None:
         dimensiune_val = ""
         if cat_val and _normalize_col(cat_val) == "tocuri":
             tip_toc_excel = get_val(row, col_map, "tip_toc")
-            tip_toc_val = "Reglabil" if _normalize_col(tip_toc_excel) == "reglabil" else "Fix"
+            tip_toc_val = tip_toc_from_excel_cell(tip_toc_excel, furn_val)
             reglaj_excel = get_val(row, col_map, "reglaj")
             dimensiune_val = re.sub(r"[^0-9\-]", "", (reglaj_excel or ""))
             if dimensiune_val and not dimensiune_val.endswith(" MM"):
@@ -180,7 +182,10 @@ def main() -> None:
             mod_raw = "Toc"
             modele = ["Toc"]
             dec_val = ""
-            fin_val = ""
+            if _normalize_col(furn_val) == "erkado":
+                fin_val = get_val(row, col_map, "finisaj") or fin_val
+            else:
+                fin_val = ""
 
         modele = [m.strip() for m in (mod_raw or "").split(",") if m.strip()]
         if not modele:
