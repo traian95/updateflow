@@ -5,6 +5,7 @@
 .env.local
 *.env.local
 supabase_service_role.key
+supabase_db.url
 
 # =========================
 # Python cache / virtual env

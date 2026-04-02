@@ -55,11 +55,20 @@ def _item_majuscule_stoc_erkado_usi_toc(item: dict[str, Any]) -> bool:
     return fu in ("Stoc", "Erkado") and tip in ("usi", "tocuri")
 
 
+def _item_afisare_majuscule_cos_pdf(item: dict[str, Any]) -> bool:
+    """Stoc/Erkado sau kit ușă exterior (inclusiv bară trăgătoare în denumire)."""
+    if _item_majuscule_stoc_erkado_usi_toc(item):
+        return True
+    if item.get("usi_exterior_kit") and str(item.get("furnizor") or "").strip() == "Exterior":
+        return True
+    return False
+
+
 def apply_majuscule_line_stoc_erkado(item: dict[str, Any], line: str) -> str:
     """Aplică majuscule pe linia de produs dacă e ușă/toc Stoc sau Erkado."""
     if not line:
         return line
-    if _item_majuscule_stoc_erkado_usi_toc(item):
+    if _item_afisare_majuscule_cos_pdf(item):
         return line.upper()
     return line
 
@@ -460,6 +469,7 @@ def genereaza_pdf_oferta(
     curs_euro: float | None = None,
     tva_procent: int | None = None,
     discount_proc: int = 0,
+    aplica_adaugiri_denumire: bool = True,
 ) -> None:
     """Generează fișier PDF pentru o ofertă (din aplicație sau din istoric admin)."""
     config = AppConfig()
@@ -509,6 +519,8 @@ def genereaza_pdf_oferta(
             nume = nume + " (DEBARA)"
         if item.get("debara_toc"):
             nume = nume + " (Toc DEBARA)"
+        if _item_afisare_majuscule_cos_pdf(item):
+            nume = nume.upper()
         if item.get("tip") == "manere_engs":
             pl = float(item.get("pret_lei_cu_tva") or 0)
             if _is_item_fara_discount(item):

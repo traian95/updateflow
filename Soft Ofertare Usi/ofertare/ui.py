@@ -32,7 +32,7 @@ from .db_cloud import (
     get_manere_engs_finisaje,
     get_manere_engs_modele,
     get_manere_engs_pret_lei,
-    get_usi_exterioare_rows,
+    get_usi_exterior_configurator_rows,
 )
 from .db import (
     DbHandles,
@@ -216,6 +216,122 @@ INPUT_BORDER_GRAY = "#444444"
 # Uși exterior: profil de cuplare scăzut din dimensiunile nominale (mm), ca în specificațiile tehnice.
 USI_EXTERIOR_COUPLING_MM = 60
 USI_EXTERIOR_TOC_LABELS = ("THERMO 64", "THERMO 78", "THERMO HOT 78", "THERMO HOT 88")
+# Bare trăgătoare: Supabase — tabel `bare_exterioare` (îmbinat în memorie cu `usi_exterioare`).
+# Prefix logic pentru rânduri «bară» (import script: «Bara tragatoare | …»).
+# Acceptăm diacritice (trăgătoare), fără spațiu după «|», etc.
+
+
+def _usi_ascii_fold(s: str) -> str:
+    """casefold + elimină diacritice RO uzuale pentru potriviri robuste."""
+    t = (s or "").strip().casefold()
+    for a, b in (
+        ("ă", "a"),
+        ("â", "a"),
+        ("î", "i"),
+        ("ș", "s"),
+        ("ş", "s"),
+        ("ț", "t"),
+        ("ţ", "t"),
+        ("\u2014", "-"),
+        ("\u2013", "-"),
+    ):
+        t = t.replace(a, b)
+    return t
+
+
+def _usi_exterior_label_is_bara(lab: str) -> bool:
+    t = _usi_ascii_fold(lab).replace("_", " ")
+    if not t:
+        return False
+    # Import standard sau text cu diacritice eliminate: conține «bara tragatoare»
+    return "bara tragatoare" in t
+
+
+USI_EXTERIOR_BARA_MODEL_NONE = "— Fără bară —"
+USI_EXTERIOR_BARA_PLACEHOLDER = "—"
+
+
+def _usi_exterior_row_model_text(row: dict) -> str:
+    """Textul folosit ca identificator listă (coloane uzuale Supabase)."""
+    for key in ("model", "denumire", "nume", "cod", "label", "titlu"):
+        raw = row.get(key)
+        if raw is None:
+            continue
+        s = str(raw).strip()
+        if s:
+            return s
+    return ""
+
+
+def _usi_exterior_row_is_bara_marked(row: dict) -> bool:
+    """Rând marcat ca bară în alte coloane (fără prefix în «model»)."""
+    for k in ("tip_produs", "tip", "sursa", "categorie", "grupa", "tip_rand", "categorie_produs"):
+        v = _usi_ascii_fold(str(row.get(k) or "")).replace("_", " ")
+        if not v:
+            continue
+        if "bara tragatoare" in v:
+            return True
+        compact = v.replace(" ", "")
+        if "baratragatoare" in compact or "baretragatoare" in compact:
+            return True
+        if "bara" in v and "trag" in v:
+            return True
+    return False
+
+
+def _usi_exterior_row_bara_fk(row: dict) -> str:
+    """Cheie unică text pentru o bară (caută în toate câmpurile text din rând)."""
+    fk0 = _usi_exterior_row_model_text(row)
+    if fk0 and _usi_exterior_label_is_bara(fk0):
+        return fk0
+    for _k, v in row.items():
+        if v is None or isinstance(v, (int, float, bool, dict, list)):
+            continue
+        s = str(v).strip()
+        if len(s) >= 12 and _usi_exterior_label_is_bara(s):
+            return s
+    if _usi_exterior_row_is_bara_marked(row) and fk0:
+        return fk0
+    return ""
+
+
+def _usi_exterior_row_is_bara_row(modele_row: dict) -> bool:
+    return bool(_usi_exterior_row_bara_fk(modele_row)) or _usi_exterior_row_is_bara_marked(modele_row)
+
+
+def _usi_parse_bara_fk(fk: str) -> tuple[str, str, str] | None:
+    """«Bara tragatoare | cod | lungime | decor» → (cod, lungime, decor)."""
+    parts = [p.strip() for p in (fk or "").split("|") if p.strip()]
+    if len(parts) < 4:
+        return None
+    head = _usi_ascii_fold(parts[0]).replace("_", " ")
+    if "bara tragatoare" not in head:
+        return None
+    return parts[1], parts[2], parts[3]
+
+
+def _lungime_bara_sort_key(label: str) -> int:
+    m = re.search(r"(\d+)", label or "")
+    return int(m.group(1)) if m else 0
+
+
+def _usi_exterior_build_bare_matrix(modele: list[dict]) -> dict[str, dict[str, dict[str, str]]]:
+    """cod → lungime (text din BD) → decor → cheie `model` completă."""
+    matrix: dict[str, dict[str, dict[str, str]]] = {}
+    for row in modele:
+        if not _usi_exterior_row_is_bara_row(row):
+            continue
+        fk = (_usi_exterior_row_bara_fk(row) or _usi_exterior_row_model_text(row)).strip()
+        if not fk:
+            continue
+        parsed = _usi_parse_bara_fk(fk)
+        if not parsed:
+            continue
+        cod, lung, dec = parsed
+        matrix.setdefault(cod, {}).setdefault(lung, {})[dec] = fk
+    return matrix
+
+
 RADIO_ACCENT = "#546E7A"
 RADIO_ACCENT_HOVER = "#455A64"
 
@@ -4482,6 +4598,7 @@ class AplicatieOfertare(ctk.CTk):
         except Exception:
             pass
         self._frame_usi_exterior_host.pack(side="right", fill="both", padx=(0, 0))
+        self._usi_exterior_reload_from_cloud_async()
 
     def _inchide_configurator_usi_exterior(self) -> None:
         if not getattr(self, "_frame_usi_exterior_host", None):
@@ -4578,6 +4695,74 @@ class AplicatieOfertare(ctk.CTk):
         self._style_modern_entry(entry_decor)
         entry_decor.bind("<KeyRelease>", self._on_usi_exterior_decor_change, add="+")
 
+        card_bara = ctk.CTkFrame(f_left_inner, fg_color="#313131", corner_radius=12, border_width=1, border_color="#3b3b3b")
+        card_bara.pack(fill="x", pady=(0, 10))
+        ctk.CTkLabel(
+            card_bara,
+            text="Bară trăgătoare",
+            font=("Segoe UI", 13, "bold"),
+            text_color="#ECEFF1",
+        ).pack(anchor="w", padx=12, pady=(10, 6))
+        f_bara_model_shell = ctk.CTkFrame(
+            card_bara,
+            fg_color="#1e2a1f",
+            corner_radius=10,
+            border_width=2,
+            border_color=GREEN_SOFT,
+        )
+        f_bara_model_shell.pack(fill="x", padx=12, pady=(0, 10))
+        ctk.CTkLabel(
+            f_bara_model_shell,
+            text="Model bară (selectare)",
+            font=("Segoe UI", 10, "bold"),
+            text_color="#9CCC9C",
+        ).pack(anchor="w", padx=12, pady=(10, 4))
+        cb_bara_model = ctk.CTkComboBox(
+            f_bara_model_shell,
+            width=720,
+            values=[USI_EXTERIOR_BARA_MODEL_NONE],
+            state="normal" if not ro else "disabled",
+            command=lambda _c: self._usi_bare_on_model_change(),
+        )
+        cb_bara_model.pack(fill="x", padx=12, pady=(0, 6))
+        cb_bara_model.set(USI_EXTERIOR_BARA_MODEL_NONE)
+        self._style_modern_combobox(cb_bara_model)
+        lbl_bara_model_display = ctk.CTkLabel(
+            f_bara_model_shell,
+            text="— FĂRĂ BARĂ —",
+            font=("Segoe UI", 16, "bold"),
+            text_color="#757575",
+            anchor="w",
+            justify="left",
+        )
+        lbl_bara_model_display.pack(fill="x", padx=12, pady=(4, 12))
+        ctk.CTkLabel(card_bara, text="Lungime bară", font=("Segoe UI", 11, "bold"), text_color="#CFCFCF").pack(
+            anchor="w", padx=12, pady=(0, 6)
+        )
+        cb_bara_lungime = ctk.CTkComboBox(
+            card_bara,
+            width=780,
+            values=[USI_EXTERIOR_BARA_PLACEHOLDER],
+            state="disabled",
+            command=lambda _c: self._usi_bare_on_lungime_change(),
+        )
+        cb_bara_lungime.pack(fill="x", padx=12, pady=(0, 6))
+        cb_bara_lungime.set(USI_EXTERIOR_BARA_PLACEHOLDER)
+        self._style_modern_combobox(cb_bara_lungime)
+        ctk.CTkLabel(card_bara, text="Decor bară", font=("Segoe UI", 11, "bold"), text_color="#CFCFCF").pack(
+            anchor="w", padx=12, pady=(0, 6)
+        )
+        cb_bara_decor = ctk.CTkComboBox(
+            card_bara,
+            width=780,
+            values=[USI_EXTERIOR_BARA_PLACEHOLDER],
+            state="disabled",
+            command=lambda _c: self._usi_bare_on_decor_change(),
+        )
+        cb_bara_decor.pack(fill="x", padx=12, pady=(0, 12))
+        cb_bara_decor.set(USI_EXTERIOR_BARA_PLACEHOLDER)
+        self._style_modern_combobox(cb_bara_decor)
+
         card_dim = ctk.CTkFrame(f_left_inner, fg_color="#313131", corner_radius=12, border_width=1, border_color="#3b3b3b")
         card_dim.pack(fill="x", pady=(0, 8))
         ctk.CTkLabel(card_dim, text="Dimensiuni", font=("Segoe UI", 13, "bold")).pack(anchor="w", padx=12, pady=(10, 6))
@@ -4629,6 +4814,16 @@ class AplicatieOfertare(ctk.CTk):
             justify="left",
         )
         lbl_sum_toc.pack(fill="x", padx=12, pady=4)
+        lbl_sum_bara = ctk.CTkLabel(
+            f_right,
+            text="Bară: —",
+            font=("Segoe UI", 11),
+            text_color="#aaaaaa",
+            anchor="w",
+            justify="left",
+            wraplength=560,
+        )
+        lbl_sum_bara.pack(fill="x", padx=12, pady=4)
         lbl_sum_dims = ctk.CTkLabel(
             f_right,
             text="Dimensiuni calculate:\n—",
@@ -4670,11 +4865,16 @@ class AplicatieOfertare(ctk.CTk):
         self._usi_exterior_widgets = {
             "cb_model": cb_model,
             "cb_toc": cb_toc,
+            "cb_bara_model": cb_bara_model,
+            "cb_bara_lungime": cb_bara_lungime,
+            "cb_bara_decor": cb_bara_decor,
+            "lbl_bara_model_display": lbl_bara_model_display,
             "entry_decor": entry_decor,
             "entry_w": entry_w,
             "entry_h": entry_h,
             "lbl_model": lbl_sum_model,
             "lbl_toc": lbl_sum_toc,
+            "lbl_bara": lbl_sum_bara,
             "lbl_dims": lbl_sum_dims,
             "lbl_pret": lbl_sum_pret,
             "btn_add": btn_add,
@@ -4682,50 +4882,181 @@ class AplicatieOfertare(ctk.CTk):
         self._usi_exterior_modele_rows: list[dict] = []
         self._usi_exterior_model_labels: list[str] = []
         self._usi_exterior_model_filtered_labels: list[str] = []
+        self._usi_bare_matrix: dict[str, dict[str, dict[str, str]]] = {}
         self._usi_exterior_panel_built = True
 
-        def _load_worker() -> None:
+    def _usi_exterior_apply_loaded_modele(self, modele: list, err: str) -> None:
+        """Aplică rândurile din Supabase pe combobox-uri (fir principal UI)."""
+        ro = bool(getattr(self, "_win_oferta_readonly", False))
+        w = getattr(self, "_usi_exterior_widgets", None)
+        if not w:
+            return
+        self._usi_exterior_modele_rows = modele
+        self._usi_bare_matrix = _usi_exterior_build_bare_matrix(modele)
+        coduri_bare = sorted(self._usi_bare_matrix.keys(), key=str.casefold)
+        labels: list[str] = []
+        seen: set[str] = set()
+        for i, row in enumerate(modele):
+            nume = _usi_exterior_row_model_text(row)
+            if not nume:
+                nume = f"Model #{i + 1}"
+            if _usi_exterior_row_is_bara_row(row):
+                continue
+            key = nume.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            labels.append(nume)
+        self._usi_exterior_model_labels = labels
+        cb_m = w["cb_model"]
+        cb_bm = w.get("cb_bara_model")
+        cb_bl = w.get("cb_bara_lungime")
+        cb_bd = w.get("cb_bara_decor")
+        if cb_bm is not None:
+            vals_m = [USI_EXTERIOR_BARA_MODEL_NONE] + coduri_bare
+            cb_bm.configure(values=vals_m, state="normal" if not ro else "disabled")
             try:
-                modele = get_usi_exterioare_rows()
-                err = ""
+                cb_bm.set(USI_EXTERIOR_BARA_MODEL_NONE)
+            except Exception:
+                pass
+        if cb_bl is not None:
+            cb_bl.configure(values=[USI_EXTERIOR_BARA_PLACEHOLDER], state="disabled")
+            try:
+                cb_bl.set(USI_EXTERIOR_BARA_PLACEHOLDER)
+            except Exception:
+                pass
+        if cb_bd is not None:
+            cb_bd.configure(values=[USI_EXTERIOR_BARA_PLACEHOLDER], state="disabled")
+            try:
+                cb_bd.set(USI_EXTERIOR_BARA_PLACEHOLDER)
+            except Exception:
+                pass
+        if not labels:
+            cb_m.configure(values=["(Nu există modele în cloud)"], state="disabled")
+            w["btn_add"].configure(state="disabled")
+            if err:
+                self.afiseaza_mesaj("Atenție", err, "#7a1a1a")
+        else:
+            self._usi_exterior_model_filtered_labels = list(labels)
+            cb_m.configure(values=labels, state="normal")
+            cb_m.set(labels[0])
+            self._bind_usi_exterior_model_interactions(cb_m)
+            w["btn_add"].configure(state="disabled" if ro else "normal")
+        self._usi_exterior_set_toc(self._usi_exterior_toc_selected)
+        self._on_usi_exterior_selection_change()
+
+    def _usi_exterior_reload_from_cloud_async(self) -> None:
+        """Reîncarcă `usi_exterioare` la fiecare deschidere a configuratorului (fără cache vechi)."""
+
+        def worker() -> None:
+            try:
+                modele = get_usi_exterior_configurator_rows(force=True)
+                err_m = ""
             except Exception:
                 logger.exception("Încărcare Supabase uși exterior (usi_exterioare)")
                 modele = []
-                err = "Eroare la încărcarea datelor din cloud."
+                err_m = "Eroare la încărcarea datelor din cloud."
+            self.after(0, lambda m=modele, e=err_m: self._usi_exterior_apply_loaded_modele(m, e))
 
-            def _apply() -> None:
-                self._usi_exterior_modele_rows = modele
-                labels: list[str] = []
-                seen: set[str] = set()
-                for i, row in enumerate(modele):
-                    nume = ((row.get("model") or row.get("denumire") or row.get("nume") or row.get("cod") or "").strip())
-                    if not nume:
-                        nume = f"Model #{i + 1}"
-                    key = nume.lower()
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    labels.append(nume)
-                self._usi_exterior_model_labels = labels
-                w = self._usi_exterior_widgets
-                cb_m = w["cb_model"]
-                if not labels:
-                    cb_m.configure(values=["(Nu există modele în cloud)"], state="disabled")
-                    w["btn_add"].configure(state="disabled")
-                    if err:
-                        self.afiseaza_mesaj("Atenție", err, "#7a1a1a")
-                else:
-                    self._usi_exterior_model_filtered_labels = list(labels)
-                    cb_m.configure(values=labels, state="normal")
-                    cb_m.set(labels[0])
-                    self._bind_usi_exterior_model_interactions(cb_m)
-                    w["btn_add"].configure(state="disabled" if ro else "normal")
-                self._usi_exterior_set_toc(self._usi_exterior_toc_selected)
-                self._on_usi_exterior_selection_change()
+        threading.Thread(target=worker, daemon=True).start()
 
-            self.after(0, _apply)
+    def _usi_bare_resolve_fk(self) -> str:
+        w = getattr(self, "_usi_exterior_widgets", None)
+        mtx = getattr(self, "_usi_bare_matrix", {}) or {}
+        if not w:
+            return ""
+        cb_bm = w.get("cb_bara_model")
+        cb_bl = w.get("cb_bara_lungime")
+        cb_bd = w.get("cb_bara_decor")
+        cod = (cb_bm.get() or "").strip() if cb_bm is not None else ""
+        if not cod or cod == USI_EXTERIOR_BARA_MODEL_NONE:
+            return ""
+        lung = (cb_bl.get() or "").strip() if cb_bl is not None else ""
+        dec = (cb_bd.get() or "").strip() if cb_bd is not None else ""
+        if lung in (USI_EXTERIOR_BARA_PLACEHOLDER, "") or dec in (USI_EXTERIOR_BARA_PLACEHOLDER, ""):
+            return ""
+        return (mtx.get(cod, {}).get(lung, {}) or {}).get(dec, "")
 
-        threading.Thread(target=_load_worker, daemon=True).start()
+    def _sync_lbl_bara_model_display(self) -> None:
+        """Actualizează caseta cu modelul barei (majuscule)."""
+        w = getattr(self, "_usi_exterior_widgets", None)
+        if not w:
+            return
+        lbl = w.get("lbl_bara_model_display")
+        cb_bm = w.get("cb_bara_model")
+        if lbl is None or cb_bm is None:
+            return
+        cod = (cb_bm.get() or "").strip()
+        if not cod or cod == USI_EXTERIOR_BARA_MODEL_NONE:
+            lbl.configure(text="— FĂRĂ BARĂ —", text_color="#757575")
+        else:
+            lbl.configure(text=cod.upper(), text_color="#A5D6A7")
+
+    def _usi_bare_on_model_change(self, _event=None) -> None:
+        w = getattr(self, "_usi_exterior_widgets", None)
+        if not w:
+            return
+        ro = bool(getattr(self, "_win_oferta_readonly", False))
+        mtx = getattr(self, "_usi_bare_matrix", {}) or {}
+        cb_bm = w.get("cb_bara_model")
+        cb_bl = w.get("cb_bara_lungime")
+        cb_bd = w.get("cb_bara_decor")
+        cod = (cb_bm.get() or "").strip() if cb_bm is not None else ""
+        if not cod or cod == USI_EXTERIOR_BARA_MODEL_NONE:
+            if cb_bl is not None:
+                cb_bl.configure(values=[USI_EXTERIOR_BARA_PLACEHOLDER], state="disabled")
+                cb_bl.set(USI_EXTERIOR_BARA_PLACEHOLDER)
+            if cb_bd is not None:
+                cb_bd.configure(values=[USI_EXTERIOR_BARA_PLACEHOLDER], state="disabled")
+                cb_bd.set(USI_EXTERIOR_BARA_PLACEHOLDER)
+            self._on_usi_exterior_selection_change()
+            return
+        lungs = sorted(mtx.get(cod, {}).keys(), key=_lungime_bara_sort_key)
+        if cb_bl is not None:
+            if lungs:
+                cb_bl.configure(values=lungs, state="normal" if not ro else "disabled")
+                cb_bl.set(lungs[0])
+            else:
+                cb_bl.configure(values=[USI_EXTERIOR_BARA_PLACEHOLDER], state="disabled")
+                cb_bl.set(USI_EXTERIOR_BARA_PLACEHOLDER)
+        if cb_bd is not None:
+            cb_bd.configure(values=[USI_EXTERIOR_BARA_PLACEHOLDER], state="disabled")
+            cb_bd.set(USI_EXTERIOR_BARA_PLACEHOLDER)
+        self._usi_bare_on_lungime_change()
+
+    def _usi_bare_on_lungime_change(self, _event=None) -> None:
+        w = getattr(self, "_usi_exterior_widgets", None)
+        if not w:
+            return
+        ro = bool(getattr(self, "_win_oferta_readonly", False))
+        mtx = getattr(self, "_usi_bare_matrix", {}) or {}
+        cb_bm = w.get("cb_bara_model")
+        cb_bl = w.get("cb_bara_lungime")
+        cb_bd = w.get("cb_bara_decor")
+        cod = (cb_bm.get() or "").strip() if cb_bm is not None else ""
+        lung = (cb_bl.get() or "").strip() if cb_bl is not None else ""
+        if (
+            not cod
+            or cod == USI_EXTERIOR_BARA_MODEL_NONE
+            or lung in (USI_EXTERIOR_BARA_PLACEHOLDER, "")
+        ):
+            if cb_bd is not None:
+                cb_bd.configure(values=[USI_EXTERIOR_BARA_PLACEHOLDER], state="disabled")
+                cb_bd.set(USI_EXTERIOR_BARA_PLACEHOLDER)
+            self._on_usi_exterior_selection_change()
+            return
+        decs = sorted((mtx.get(cod, {}).get(lung, {}) or {}).keys(), key=str.casefold)
+        if cb_bd is not None:
+            if decs:
+                cb_bd.configure(values=decs, state="normal" if not ro else "disabled")
+                cb_bd.set(decs[0])
+            else:
+                cb_bd.configure(values=[USI_EXTERIOR_BARA_PLACEHOLDER], state="disabled")
+                cb_bd.set(USI_EXTERIOR_BARA_PLACEHOLDER)
+        self._on_usi_exterior_selection_change()
+
+    def _usi_bare_on_decor_change(self, _event=None) -> None:
+        self._on_usi_exterior_selection_change()
 
     def _on_usi_exterior_selection_change(self) -> None:
         w = getattr(self, "_usi_exterior_widgets", None)
@@ -4755,7 +5086,32 @@ class AplicatieOfertare(ctk.CTk):
         if pret_adaos <= 0:
             row_t = self._usi_ext_find_model_toc_row(self._usi_exterior_modele_rows, lab, toc_lbl)
             pret_adaos = self._usi_ext_pret_adaos_toc(row_t)
-        total = round(pret_baza + pret_adaos, 2)
+        pret_bara = 0.0
+        bara_txt = "—"
+        fk_b = self._usi_bare_resolve_fk()
+        if fk_b:
+            row_b = next(
+                (
+                    r
+                    for r in self._usi_exterior_modele_rows
+                    if _usi_exterior_row_model_text(r).strip().lower() == fk_b.strip().lower()
+                ),
+                None,
+            )
+            if row_b is not None:
+                pret_bara = float(self._usi_ext_pret_baza_model(row_b) or 0.0)
+                cb_bm = w.get("cb_bara_model")
+                cb_bl = w.get("cb_bara_lungime")
+                cb_bd = w.get("cb_bara_decor")
+                bc = (cb_bm.get() or "").strip() if cb_bm else ""
+                bl = (cb_bl.get() or "").strip() if cb_bl else ""
+                bd = (cb_bd.get() or "").strip() if cb_bd else ""
+                if bc and bc != USI_EXTERIOR_BARA_MODEL_NONE and bl not in ("", USI_EXTERIOR_BARA_PLACEHOLDER) and bd not in (
+                    "",
+                    USI_EXTERIOR_BARA_PLACEHOLDER,
+                ):
+                    bara_txt = f"{bc.upper()} · {bl.upper()} · {bd.upper()}  |  {pret_bara:.2f} €"
+        total = round(pret_baza + pret_adaos + pret_bara, 2)
 
         dims = self._usi_ext_collect_dims(row_m)
         lines: list[str] = []
@@ -4803,6 +5159,12 @@ class AplicatieOfertare(ctk.CTk):
         total_ron_tva = round(total * float(self.curs_euro) * (1 + float(self.tva_procent) / 100.0), 2)
         w["lbl_model"].configure(text=f"Model: {lab if row_m else '—'}")
         w["lbl_toc"].configure(text=f"Tip toc: {toc_lbl}")
+        lb_b = w.get("lbl_bara")
+        if lb_b is not None:
+            lb_b.configure(
+                text=f"Bară: {bara_txt}",
+                text_color="#81c784" if pret_bara > 0 else "#aaaaaa",
+            )
         w["lbl_dims"].configure(text="Dimensiuni calculate:\n" + "\n".join(lines))
         w["lbl_pret"].configure(
             text=(
@@ -4810,6 +5172,7 @@ class AplicatieOfertare(ctk.CTk):
                 f"Preț RON cu TVA: {total_ron_tva:.2f} RON"
             )
         )
+        self._sync_lbl_bara_model_display()
 
     def _adauga_usi_exterior_in_cos(self) -> None:
         if getattr(self, "_win_oferta_readonly", False):
@@ -4843,13 +5206,39 @@ class AplicatieOfertare(ctk.CTk):
         if pret_adaos <= 0:
             row_t = self._usi_ext_find_model_toc_row(self._usi_exterior_modele_rows, lab, toc_lbl)
             pret_adaos = self._usi_ext_pret_adaos_toc(row_t)
-        total = round(pret_baza + pret_adaos, 2)
+        pret_bara = 0.0
+        bara_key = self._usi_bare_resolve_fk()
+        bara_combo = ""
+        if bara_key:
+            row_b = next(
+                (
+                    r
+                    for r in self._usi_exterior_modele_rows
+                    if _usi_exterior_row_model_text(r).strip().lower() == bara_key.strip().lower()
+                ),
+                None,
+            )
+            if row_b is not None:
+                pret_bara = float(self._usi_ext_pret_baza_model(row_b) or 0.0)
+            cb_bm = w.get("cb_bara_model")
+            cb_bl = w.get("cb_bara_lungime")
+            cb_bd = w.get("cb_bara_decor")
+            bc = (cb_bm.get() or "").strip() if cb_bm else ""
+            bl = (cb_bl.get() or "").strip() if cb_bl else ""
+            bd = (cb_bd.get() or "").strip() if cb_bd else ""
+            if bc and bl and bd:
+                bara_combo = f"{bc} · {bl} · {bd}"
+        total = round(pret_baza + pret_adaos + pret_bara, 2)
         if total <= 0:
             self.afiseaza_mesaj("Atenție", "Prețul calculat este 0. Verifică datele din tabelul `usi_exterioare`.", "#7a1a1a")
             return
         decor_txt = (w.get("entry_decor").get() or "").strip().upper() if w.get("entry_decor") is not None else ""
-        decor_suffix = f" ({decor_txt})" if decor_txt else ""
-        nume = f"USA EXTERIOR {lab} — Toc {toc_lbl}{decor_suffix}"
+        parts_upper: list[str] = [f"USA EXTERIOR {lab.upper()}", f"TOC {toc_lbl.upper()}"]
+        if decor_txt:
+            parts_upper.append(f"DECOR UȘĂ {decor_txt}")
+        if bara_combo and pret_bara > 0:
+            parts_upper.append(f"BARĂ {bara_combo.upper()} — {pret_bara:.2f} EUR")
+        nume = " — ".join(parts_upper)
         self.cos_cumparaturi.append(
             {
                 "nume": nume,
@@ -4861,6 +5250,9 @@ class AplicatieOfertare(ctk.CTk):
                 "usi_exterior_model": lab,
                 "usi_exterior_toc": toc_lbl,
                 "usi_exterior_decor": decor_txt,
+                "usi_exterior_bara": bara_combo.upper() if bara_combo else "",
+                "usi_exterior_bara_key": bara_key,
+                "usi_exterior_bara_pret_eur": pret_bara,
             }
         )
         self.refresh_cos(getattr(self, "_win_oferta_readonly", False))
@@ -7670,17 +8062,70 @@ class AplicatieOfertare(ctk.CTk):
                     fg_color="#7a1a1a",
                     command=lambda idx=i: self._remove_cos_item(idx),
                 ).pack(side="right", padx=4)
-                # Etichetă preț pe linie în dreapta (LEI cu TVA)
-                ctk.CTkLabel(
-                    f_controls,
-                    text=f"{pret_total_lei_cu_tva:.2f} LEI (TVA inclus)",
-                    font=("Segoe UI", 12),
-                    text_color="#facc15",
-                ).pack(side="right", padx=8)
+                f_price = ctk.CTkFrame(f_controls, fg_color="transparent")
+                f_price.pack(side="right", padx=8)
+                if item.get("usi_exterior_kit"):
+                    bar_e = float(item.get("usi_exterior_bara_pret_eur") or 0)
+                    ctk.CTkLabel(
+                        f_price,
+                        text=f"{pret_total_eur:.2f} EUR",
+                        font=("Segoe UI", 12, "bold"),
+                        text_color="#4ade80",
+                    ).pack(anchor="e")
+                    if bar_e > 0:
+                        ctk.CTkLabel(
+                            f_price,
+                            text=f"BARĂ {bar_e:.2f} EUR",
+                            font=("Segoe UI", 10, "bold"),
+                            text_color="#86efac",
+                        ).pack(anchor="e")
+                    ctk.CTkLabel(
+                        f_price,
+                        text=f"{pret_total_lei_cu_tva:.2f} LEI TVA",
+                        font=("Segoe UI", 11),
+                        text_color="#facc15",
+                    ).pack(anchor="e")
+                else:
+                    ctk.CTkLabel(
+                        f_price,
+                        text=f"{pret_total_lei_cu_tva:.2f} LEI (TVA inclus)",
+                        font=("Segoe UI", 12),
+                        text_color="#facc15",
+                    ).pack(anchor="e")
             else:
                 ctk.CTkLabel(f_controls, text=f"Cantitate: {item['qty']} buc", font=("Segoe UI", 12)).pack(
                     side="left", padx=5
                 )
+                f_price_ro = ctk.CTkFrame(f_controls, fg_color="transparent")
+                f_price_ro.pack(side="right", padx=8)
+                if item.get("usi_exterior_kit"):
+                    bar_e = float(item.get("usi_exterior_bara_pret_eur") or 0)
+                    ctk.CTkLabel(
+                        f_price_ro,
+                        text=f"{pret_total_eur:.2f} EUR",
+                        font=("Segoe UI", 12, "bold"),
+                        text_color="#4ade80",
+                    ).pack(anchor="e")
+                    if bar_e > 0:
+                        ctk.CTkLabel(
+                            f_price_ro,
+                            text=f"BARĂ {bar_e:.2f} EUR",
+                            font=("Segoe UI", 10, "bold"),
+                            text_color="#86efac",
+                        ).pack(anchor="e")
+                    ctk.CTkLabel(
+                        f_price_ro,
+                        text=f"{pret_total_lei_cu_tva:.2f} LEI TVA",
+                        font=("Segoe UI", 11),
+                        text_color="#facc15",
+                    ).pack(anchor="e")
+                else:
+                    ctk.CTkLabel(
+                        f_price_ro,
+                        text=f"{pret_total_lei_cu_tva:.2f} LEI (TVA inclus)",
+                        font=("Segoe UI", 12),
+                        text_color="#facc15",
+                    ).pack(anchor="e")
             text_color = self._cos_row_title_text_color(row_accent)
             if text_color is None and is_dubla:
                 text_color = "#93c5fd"

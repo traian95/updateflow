@@ -7,5 +7,6 @@ Pillow
 fpdf
 requests
 supabase
+psycopg[binary]>=3.1
 python-dotenv
 pyinstaller>=6.0
