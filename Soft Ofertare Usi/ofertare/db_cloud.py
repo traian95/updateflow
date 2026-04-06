@@ -1291,6 +1291,28 @@ def get_oferte_by_date(cursor, data_prefix: str):
 # —— Uși exterior (prețuri în Supabase) ——
 TABLE_USI_EXTERIOARE = "usi_exterioare"
 TABLE_BARE_EXTERIOARE = "bare_exterioare"
+TABLE_KITURI_FERONERIE = "kituri_feronerie"
+TABLE_DIMENSIUNI_TOCURI = "dimensiuni_tocuri"
+
+# Accesorii generice ușă exterior — rânduri în `produse` (EUR listă fără TVA); nu apar în meniul principal (vezi ui._get_categorii_din_db).
+CATEGORIE_ACCESORII_USA_EXTERIOR = "Accesorii ușă exterior"
+FURNIZOR_ACCESORII_USA_EXTERIOR = "Stoc"
+
+
+def get_kituri_feronerie_rows(*, force: bool = False) -> list[dict[str, Any]]:
+    """Prețuri kit feronerie (kit × tip_toc × decor) — EUR listă fără TVA."""
+    try:
+        return _rows(TABLE_KITURI_FERONERIE, force=force)
+    except Exception:
+        return []
+
+
+def get_dimensiuni_tocuri_rows(*, force: bool = False) -> list[dict[str, Any]]:
+    """Dimensiuni deschidere per tip toc × material × lățime foaie (text mm, ex. «957 MM»)."""
+    try:
+        return _rows(TABLE_DIMENSIUNI_TOCURI, force=force)
+    except Exception:
+        return []
 
 
 def get_usi_exterioare_rows(*, force: bool = False) -> list[dict[str, Any]]:
@@ -1306,3 +1328,21 @@ def get_usi_exterior_configurator_rows(*, force: bool = False) -> list[dict[str,
     except Exception:
         bars = []
     return doors + bars
+
+
+def get_accesorii_usa_exterior_rows(*, force: bool = False) -> list[dict[str, Any]]:
+    """Accesorii ușă exterior din `produse` (categorie dedicată, preț EUR fără TVA)."""
+    cat = CATEGORIE_ACCESORII_USA_EXTERIOR
+    rows = [r for r in _rows(TABLE_PRODUSE, force=force) if str(r.get("categorie") or "").strip() == cat]
+
+    def _k(r: dict[str, Any]) -> tuple[str, str]:
+        return (str(r.get("model") or "").strip().casefold(), str(r.get("decor") or "").strip().casefold())
+
+    rows.sort(key=_k)
+    return rows
+
+
+def delete_accesorii_usa_exterior_catalog() -> None:
+    """Șterge din catalog toate liniile «Accesorii ușă exterior» (înainte de reimport CSV)."""
+    _get_supabase_client_for_write().table(TABLE_PRODUSE).delete().eq("categorie", CATEGORIE_ACCESORII_USA_EXTERIOR).execute()
+    _invalidate(TABLE_PRODUSE)

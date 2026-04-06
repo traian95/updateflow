@@ -225,6 +225,7 @@ class AdminApp(ctk.CTk):
 
     CATEGORII_STOC = [
         "Usi Interior", "Usi intrare apartament", "Tocuri", "Manere", "Accesorii",
+        "Accesorii ușă exterior",
         "Izolatii parchet", "Plinta parchet",
         "Parchet Laminat Stoc", "Parchet Laminat Comanda", "Parchet Spc Stoc",
         "Parchet Spc Floorify", "Parchet Triplu Stratificat",

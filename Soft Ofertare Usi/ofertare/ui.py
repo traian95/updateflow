@@ -29,6 +29,8 @@ from tkinter import filedialog
 from .auth_utils import hash_parola as _hash_parola
 from .config import AppConfig, BNR_TIMEOUT_S, PDF_CONTACT_EMAIL, PDF_CONTACT_TEL, get_database_path
 from .db_cloud import (
+    get_accesorii_usa_exterior_rows,
+    get_kituri_feronerie_rows,
     get_manere_engs_finisaje,
     get_manere_engs_modele,
     get_manere_engs_pret_lei,
@@ -220,6 +222,23 @@ INPUT_BORDER_GRAY = "#444444"
 # Uși exterior: profil de cuplare scăzut din dimensiunile nominale (mm), ca în specificațiile tehnice.
 USI_EXTERIOR_COUPLING_MM = 60
 USI_EXTERIOR_TOC_LABELS = ("THERMO 64", "THERMO 78", "THERMO HOT 78", "THERMO HOT 88")
+USI_EXTERIOR_KIT_NONE = "— Fără feronerie —"
+USI_EXTERIOR_FERON_DECOR_NONE = "— Alege decor feronerie —"
+USI_EXTERIOR_ACC_NUME_NONE = "— Alege accesoriul —"
+USI_EXTERIOR_ACC_DECOR_NONE = "— Alege decorul —"
+USI_EXTERIOR_ACC_DECOR_EMPTY_LABEL = "(fără decor)"
+# Contraplaca Zi/Noapte: doar pentru aceste tipuri toc (nu THERMO 64 / THERMO 78).
+USI_EXTERIOR_TOC_CONTRAPLACA_ALLOWED = frozenset({"THERMO HOT 78", "THERMO HOT 88"})
+
+
+def _usi_feron_row_display_label(row: dict) -> str:
+    """Etichetă unică în combobox pentru un rând kituri (decor + fragment descriere)."""
+    dec = (row.get("decor") or "").strip()
+    des = (row.get("descriere_feronerie") or "").strip()
+    if des:
+        snip = des if len(des) <= 44 else des[:41] + "…"
+        return f"{dec} — {snip}"
+    return dec
 # Bare trăgătoare: Supabase — tabel `bare_exterioare` (îmbinat în memorie cu `usi_exterioare`).
 # Prefix logic pentru rânduri «bară» (import script: «Bara tragatoare | …»).
 # Acceptăm diacritice (trăgătoare), fără spațiu după «|», etc.
@@ -241,6 +260,12 @@ def _usi_ascii_fold(s: str) -> str:
     ):
         t = t.replace(a, b)
     return t
+
+
+def _usi_acc_is_contraplaca_zi_noapte(nume: str) -> bool:
+    """Recunoaște linia de catalog «Contraplaca Zi/Noapte» (fără decor în BD)."""
+    t = _usi_ascii_fold(nume or "")
+    return "contraplaca" in t and "noapte" in t
 
 
 def _usi_exterior_label_is_bara(lab: str) -> bool:
@@ -3769,6 +3794,7 @@ class AplicatieOfertare(ctk.CTk):
         _force_ctk_native_dark_bg(f_selectie, CORP_FRAME_BG)
         f_selectie.pack(side="left", fill="both", padx=(0, 10))
         f_selectie.pack_propagate(False)
+        self._frame_selectie_oferta = f_selectie
 
         f_global_filter = ctk.CTkFrame(
             f_selectie, fg_color="#2D2D2D", bg_color=CORP_FRAME_BG, height=106, corner_radius=OFERTA_WIDGET_RADIUS
@@ -4319,7 +4345,14 @@ class AplicatieOfertare(ctk.CTk):
         din_db = get_categorii_distinct(self.cursor)
 
         # Categorii care NU trebuie afișate în meniul din stânga
-        exclude = {"Accesorii", "Izolatie parchet", "Izolatii parchet", "Izolatie", "Izolatii"}
+        exclude = {
+            "Accesorii",
+            "Accesorii ușă exterior",
+            "Izolatie parchet",
+            "Izolatii parchet",
+            "Izolatie",
+            "Izolatii",
+        }
 
         def _vizibila(cat: str) -> bool:
             c_norm = (cat or "").strip()
@@ -4538,6 +4571,10 @@ class AplicatieOfertare(ctk.CTk):
                 cb_toc.set(label)
             except Exception:
                 pass
+        cb_kit = w.get("cb_kit")
+        kit = (cb_kit.get() or "").strip() if cb_kit is not None else ""
+        if kit and kit != USI_EXTERIOR_KIT_NONE:
+            self._usi_exterior_fill_feron_decor_combo(kit, (label or "").strip())
         self._on_usi_exterior_selection_change()
 
     def _on_usi_exterior_decor_change(self, _event=None) -> None:
@@ -4688,10 +4725,27 @@ class AplicatieOfertare(ctk.CTk):
             return
         self._build_usi_exterior_configurator_if_needed()
         try:
+            self._win_oferta_geom_before_exterior = self.win_oferta.geometry()
+        except Exception:
+            self._win_oferta_geom_before_exterior = None
+        try:
             self.f_cos.pack_forget()
         except Exception:
             pass
-        self._frame_usi_exterior_host.pack(side="right", fill="both", padx=(0, 0))
+        sel = getattr(self, "_frame_selectie_oferta", None)
+        if sel is not None:
+            try:
+                sel.pack_forget()
+            except Exception:
+                pass
+        self._frame_usi_exterior_host.pack(fill="both", expand=True)
+        try:
+            self.win_oferta.state("zoomed")
+        except Exception:
+            try:
+                self.win_oferta.attributes("-zoomed", True)
+            except Exception:
+                pass
         self._usi_exterior_reload_from_cloud_async()
 
     def _inchide_configurator_usi_exterior(self) -> None:
@@ -4701,10 +4755,37 @@ class AplicatieOfertare(ctk.CTk):
             self._frame_usi_exterior_host.pack_forget()
         except Exception:
             pass
+        sel = getattr(self, "_frame_selectie_oferta", None)
+        if sel is not None:
+            try:
+                sel.pack(side="left", fill="both", padx=(0, 10))
+            except Exception:
+                pass
         try:
             self.f_cos.pack(side="right", fill="both", padx=(4, 0))
         except Exception:
             pass
+        try:
+            self.win_oferta.state("normal")
+        except Exception:
+            pass
+        try:
+            self.win_oferta.attributes("-zoomed", False)
+        except Exception:
+            pass
+        geom = getattr(self, "_win_oferta_geom_before_exterior", None)
+        if geom:
+            def _restore_geom() -> None:
+                try:
+                    if self.win_oferta.winfo_exists():
+                        self.win_oferta.geometry(geom)
+                except Exception:
+                    pass
+
+            try:
+                self.win_oferta.after(50, _restore_geom)
+            except Exception:
+                _restore_geom()
 
     def _build_usi_exterior_configurator_if_needed(self) -> None:
         if getattr(self, "_usi_exterior_panel_built", False):
@@ -4773,6 +4854,19 @@ class AplicatieOfertare(ctk.CTk):
         )
         sec_toc_decor.pack(fill="x", pady=(0, 10))
         b_td = sec_toc_decor.body
+        ctk.CTkLabel(b_td, text="Kit feronerie", font=("Segoe UI", 11, "bold"), text_color="#CFCFCF").pack(
+            anchor="w", padx=12, pady=(0, 6)
+        )
+        cb_kit = ctk.CTkComboBox(
+            b_td,
+            width=780,
+            values=[USI_EXTERIOR_KIT_NONE],
+            state="normal" if not ro else "disabled",
+            command=lambda _c: self._usi_exterior_on_kit_change(),
+        )
+        cb_kit.pack(fill="x", padx=12, pady=(0, 8))
+        cb_kit.set(USI_EXTERIOR_KIT_NONE)
+        self._style_modern_combobox(cb_kit)
         ctk.CTkLabel(b_td, text="Tip Toc", font=("Segoe UI", 11, "bold"), text_color="#CFCFCF").pack(anchor="w", padx=12, pady=(0, 6))
         cb_toc = ctk.CTkComboBox(
             b_td,
@@ -4783,10 +4877,23 @@ class AplicatieOfertare(ctk.CTk):
         )
         cb_toc.pack(fill="x", padx=12, pady=(0, 8))
         self._style_modern_combobox(cb_toc)
-        ctk.CTkLabel(b_td, text="Decor (manual)", font=("Segoe UI", 11, "bold"), text_color="#CFCFCF").pack(
+        ctk.CTkLabel(b_td, text="Decor feronerie", font=("Segoe UI", 11, "bold"), text_color="#CFCFCF").pack(
             anchor="w", padx=12, pady=(2, 6)
         )
-        entry_decor = ctk.CTkEntry(b_td, width=780, placeholder_text="Introduceți decorul...")
+        cb_feron_decor = ctk.CTkComboBox(
+            b_td,
+            width=780,
+            values=[USI_EXTERIOR_FERON_DECOR_NONE],
+            state="disabled",
+            command=lambda _c: self._on_usi_exterior_selection_change(),
+        )
+        cb_feron_decor.pack(fill="x", padx=12, pady=(0, 8))
+        cb_feron_decor.set(USI_EXTERIOR_FERON_DECOR_NONE)
+        self._style_modern_combobox(cb_feron_decor)
+        ctk.CTkLabel(b_td, text="Decor ușă (manual)", font=("Segoe UI", 11, "bold"), text_color="#CFCFCF").pack(
+            anchor="w", padx=12, pady=(2, 6)
+        )
+        entry_decor = ctk.CTkEntry(b_td, width=780, placeholder_text="Introduceți decorul ușii...")
         entry_decor.pack(fill="x", padx=12, pady=(0, 10))
         self._style_modern_entry(entry_decor)
         entry_decor.bind("<KeyRelease>", self._on_usi_exterior_decor_change, add="+")
@@ -4836,9 +4943,52 @@ class AplicatieOfertare(ctk.CTk):
 
         sec_acc = _UsiExteriorCollapsibleSection(f_left_inner, "Accesorii", start_open=True)
         sec_acc.pack(fill="x", pady=(0, 10))
-        scroll_acc = ctk.CTkScrollableFrame(sec_acc.body, fg_color="#2b2b2b", height=120)
-        scroll_acc.pack(fill="both", expand=True, padx=8, pady=(0, 10))
-        _force_ctk_native_dark_bg(scroll_acc, "#2b2b2b")
+        b_acc = sec_acc.body
+        ctk.CTkLabel(b_acc, text="Accesoriu", font=("Segoe UI", 11, "bold"), text_color="#CFCFCF").pack(anchor="w", padx=12, pady=(0, 6))
+        cb_acc_nume = ctk.CTkComboBox(
+            b_acc,
+            width=780,
+            values=[USI_EXTERIOR_ACC_NUME_NONE],
+            state="disabled",
+            command=lambda _c: self._on_usi_exterior_acc_nume_change(),
+        )
+        cb_acc_nume.pack(fill="x", padx=12, pady=(0, 8))
+        cb_acc_nume.set(USI_EXTERIOR_ACC_NUME_NONE)
+        self._style_modern_combobox(cb_acc_nume)
+        f_acc_decor = ctk.CTkFrame(b_acc, fg_color="transparent")
+        f_acc_decor.pack(fill="x", padx=0, pady=(0, 4))
+        ctk.CTkLabel(f_acc_decor, text="Decor", font=("Segoe UI", 11, "bold"), text_color="#CFCFCF").pack(anchor="w", padx=12, pady=(2, 6))
+        cb_acc_decor = ctk.CTkComboBox(
+            f_acc_decor,
+            width=780,
+            values=[USI_EXTERIOR_ACC_DECOR_NONE],
+            state="disabled",
+            command=lambda _c: self._usi_exterior_acc_update_preview(),
+        )
+        cb_acc_decor.pack(fill="x", padx=12, pady=(0, 8))
+        cb_acc_decor.set(USI_EXTERIOR_ACC_DECOR_NONE)
+        self._style_modern_combobox(cb_acc_decor)
+        lbl_acc_pret = ctk.CTkLabel(
+            b_acc,
+            text="Preț EUR (catalog, fără TVA): —",
+            font=("Segoe UI", 10),
+            text_color="#9E9E9E",
+            anchor="w",
+        )
+        lbl_acc_pret.pack(fill="x", padx=12, pady=(0, 8))
+        btn_acc_add = ctk.CTkButton(
+            b_acc,
+            text="Adaugă în coș configurare",
+            width=780,
+            height=32,
+            font=("Segoe UI", 11, "bold"),
+            fg_color="#37474F",
+            hover_color="#455A64",
+            corner_radius=OFERTA_WIDGET_RADIUS,
+            state="disabled",
+            command=self._usi_exterior_acc_add_to_cart,
+        )
+        btn_acc_add.pack(fill="x", padx=12, pady=(0, 12))
 
         card_dim = ctk.CTkFrame(f_left_inner, fg_color="#313131", corner_radius=12, border_width=1, border_color="#3b3b3b")
         card_dim.pack(fill="x", pady=(0, 8))
@@ -4924,7 +5074,9 @@ class AplicatieOfertare(ctk.CTk):
 
         self._usi_exterior_widgets = {
             "cb_model": cb_model,
+            "cb_kit": cb_kit,
             "cb_toc": cb_toc,
+            "cb_feron_decor": cb_feron_decor,
             "cb_bara_model": cb_bara_model,
             "cb_bara_lungime": cb_bara_lungime,
             "cb_bara_decor": cb_bara_decor,
@@ -4933,25 +5085,54 @@ class AplicatieOfertare(ctk.CTk):
             "entry_h": entry_h,
             "cart_scroll": cart_scroll,
             "lbl_cart_total": lbl_cart_total,
-            "scroll_accesorii": scroll_acc,
+            "cb_acc_nume": cb_acc_nume,
+            "f_acc_decor": f_acc_decor,
+            "cb_acc_decor": cb_acc_decor,
+            "lbl_acc_pret": lbl_acc_pret,
+            "btn_acc_add": btn_acc_add,
             "lbl_dims": lbl_sum_dims,
             "lbl_pret": lbl_sum_pret,
             "btn_add": btn_add,
         }
+        self._usi_exterior_acc_rows: list[dict] = []
+        self._usi_exterior_acc_cart: list[dict] = []
         self._usi_exterior_modele_rows: list[dict] = []
+        self._usi_kituri_rows: list[dict] = []
+        self._usi_feron_decor_map: dict[str, dict] = {}
         self._usi_exterior_model_labels: list[str] = []
         self._usi_exterior_model_filtered_labels: list[str] = []
         self._usi_bare_matrix: dict[str, dict[str, dict[str, str]]] = {}
         self._usi_exterior_panel_built = True
 
-    def _usi_exterior_apply_loaded_modele(self, modele: list, err: str) -> None:
+    def _usi_exterior_apply_loaded_modele(
+        self,
+        modele: list,
+        err: str,
+        kituri: list | None = None,
+        accesorii: list | None = None,
+    ) -> None:
         """Aplică rândurile din Supabase pe combobox-uri (fir principal UI)."""
         ro = bool(getattr(self, "_win_oferta_readonly", False))
         w = getattr(self, "_usi_exterior_widgets", None)
         if not w:
             return
         self._usi_exterior_modele_rows = modele
+        self._usi_kituri_rows = list(kituri or [])
+        self._usi_exterior_acc_cart = []
+        self._usi_exterior_acc_rows = list(accesorii or [])
         self._usi_bare_matrix = _usi_exterior_build_bare_matrix(modele)
+        cb_kit = w.get("cb_kit")
+        if cb_kit is not None:
+            kits = sorted({str(r.get("kit") or "").strip() for r in self._usi_kituri_rows if str(r.get("kit") or "").strip()}, key=str.casefold)
+            vals_k = [USI_EXTERIOR_KIT_NONE] + kits
+            cb_kit.configure(values=vals_k, state="normal" if not ro else "disabled")
+            try:
+                cur = (cb_kit.get() or "").strip()
+                if cur not in vals_k:
+                    cb_kit.set(USI_EXTERIOR_KIT_NONE)
+            except Exception:
+                cb_kit.set(USI_EXTERIOR_KIT_NONE)
+            self._usi_exterior_refresh_feronerie_combos()
         coduri_bare = sorted(self._usi_bare_matrix.keys(), key=str.casefold)
         labels: list[str] = []
         seen: set[str] = set()
@@ -5003,6 +5184,7 @@ class AplicatieOfertare(ctk.CTk):
             w["btn_add"].configure(state="disabled" if ro else "normal")
         self._usi_exterior_set_toc(self._usi_exterior_toc_selected)
         self._on_usi_exterior_selection_change()
+        self._usi_exterior_setup_accesorii_combos(accesorii or [])
 
     def _usi_exterior_reload_from_cloud_async(self) -> None:
         """Reîncarcă `usi_exterioare` la fiecare deschidere a configuratorului (fără cache vechi)."""
@@ -5010,14 +5192,102 @@ class AplicatieOfertare(ctk.CTk):
         def worker() -> None:
             try:
                 modele = get_usi_exterior_configurator_rows(force=True)
+                kituri = get_kituri_feronerie_rows(force=True)
+                accesorii = get_accesorii_usa_exterior_rows(force=True)
                 err_m = ""
             except Exception:
                 logger.exception("Încărcare Supabase uși exterior (usi_exterioare)")
                 modele = []
+                kituri = []
+                accesorii = []
                 err_m = "Eroare la încărcarea datelor din cloud."
-            self.after(0, lambda m=modele, e=err_m: self._usi_exterior_apply_loaded_modele(m, e))
+            self.after(
+                0,
+                lambda m=modele, e=err_m, k=kituri, a=accesorii: self._usi_exterior_apply_loaded_modele(m, e, k, a),
+            )
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _usi_exterior_on_kit_change(self) -> None:
+        self._usi_exterior_refresh_feronerie_combos()
+        self._on_usi_exterior_selection_change()
+
+    def _usi_exterior_refresh_feronerie_combos(self) -> None:
+        w = getattr(self, "_usi_exterior_widgets", None) or {}
+        cb_kit = w.get("cb_kit")
+        cb_toc = w.get("cb_toc")
+        cb_fd = w.get("cb_feron_decor")
+        ro = bool(getattr(self, "_win_oferta_readonly", False))
+        rows = getattr(self, "_usi_kituri_rows", []) or []
+        kit = (cb_kit.get() or "").strip() if cb_kit is not None else ""
+        if not kit or kit == USI_EXTERIOR_KIT_NONE:
+            self._usi_feron_decor_map = {}
+            if cb_toc is not None:
+                cb_toc.configure(values=list(USI_EXTERIOR_TOC_LABELS), state="normal" if not ro else "disabled")
+            if cb_fd is not None:
+                cb_fd.configure(values=[USI_EXTERIOR_FERON_DECOR_NONE], state="disabled")
+                cb_fd.set(USI_EXTERIOR_FERON_DECOR_NONE)
+            return
+        tocs = sorted(
+            {
+                str(r.get("tip_toc") or "").strip()
+                for r in rows
+                if str(r.get("kit") or "").strip() == kit and str(r.get("tip_toc") or "").strip()
+            },
+            key=str.casefold,
+        )
+        toc_order = [t for t in USI_EXTERIOR_TOC_LABELS if t in tocs]
+        for t in tocs:
+            if t not in toc_order:
+                toc_order.append(t)
+        if cb_toc is not None:
+            if toc_order:
+                cb_toc.configure(values=toc_order, state="normal" if not ro else "disabled")
+                cur = (cb_toc.get() or "").strip()
+                if cur not in toc_order:
+                    cb_toc.set(toc_order[0])
+                    self._usi_exterior_toc_selected = toc_order[0]
+                else:
+                    self._usi_exterior_toc_selected = cur
+            else:
+                cb_toc.configure(values=list(USI_EXTERIOR_TOC_LABELS), state="normal" if not ro else "disabled")
+        toc_sel = (getattr(self, "_usi_exterior_toc_selected", None) or USI_EXTERIOR_TOC_LABELS[0] or "").strip()
+        self._usi_exterior_fill_feron_decor_combo(kit, toc_sel)
+
+    def _usi_exterior_fill_feron_decor_combo(self, kit: str, toc_lbl: str) -> None:
+        w = getattr(self, "_usi_exterior_widgets", None) or {}
+        cb_fd = w.get("cb_feron_decor")
+        rows = getattr(self, "_usi_kituri_rows", []) or []
+        ro = bool(getattr(self, "_win_oferta_readonly", False))
+        self._usi_feron_decor_map = {}
+        if not kit or kit == USI_EXTERIOR_KIT_NONE:
+            if cb_fd is not None:
+                cb_fd.configure(values=[USI_EXTERIOR_FERON_DECOR_NONE], state="disabled")
+                cb_fd.set(USI_EXTERIOR_FERON_DECOR_NONE)
+            return
+        match = [
+            r
+            for r in rows
+            if str(r.get("kit") or "").strip() == kit and str(r.get("tip_toc") or "").strip() == toc_lbl.strip()
+        ]
+        labels: list[str] = []
+        seen: set[str] = set()
+        for r in match:
+            lab = _usi_feron_row_display_label(r)
+            if lab in seen:
+                rid = r.get("id")
+                lab = f"{lab} [{rid}]"
+            seen.add(lab)
+            self._usi_feron_decor_map[lab] = r
+            labels.append(lab)
+        labels.sort(key=str.casefold)
+        if cb_fd is not None:
+            if not labels:
+                cb_fd.configure(values=[USI_EXTERIOR_FERON_DECOR_NONE], state="disabled")
+                cb_fd.set(USI_EXTERIOR_FERON_DECOR_NONE)
+            else:
+                cb_fd.configure(values=labels, state="normal" if not ro else "disabled")
+                cb_fd.set(labels[0])
 
     def _usi_bare_resolve_fk(self) -> str:
         w = getattr(self, "_usi_exterior_widgets", None)
@@ -5130,6 +5400,9 @@ class AplicatieOfertare(ctk.CTk):
         pret_baza: float,
         pret_adaos: float,
         pret_bara: float,
+        pret_feronerie: float,
+        feronerie_line_ok: bool,
+        feronerie_combo_display: str,
         total_eur: float,
         total_ron_tva: float,
         bara_line_ok: bool,
@@ -5163,12 +5436,49 @@ class AplicatieOfertare(ctk.CTk):
             _line(f"Ușă exterior ({model_label}): {r_baza:.2f} lei (TVA inclus)", color=col_muted)
             r_toc = self._usi_ext_eur_to_ron_tva(pret_adaos)
             _line(f"Tip toc ({toc_lbl}): {r_toc:.2f} lei (TVA inclus)", color=col_muted)
+            if feronerie_line_ok and pret_feronerie > 0:
+                r_fr = self._usi_ext_eur_to_ron_tva(pret_feronerie)
+                fd = (feronerie_combo_display or "—").replace("  |  ", " · ")
+                _line(f"Kit feronerie ({fd}): {r_fr:.2f} lei (TVA inclus)", color=col_hi)
             if bara_line_ok and pret_bara > 0:
                 r_br = self._usi_ext_eur_to_ron_tva(pret_bara)
                 short = (bara_combo_display or "—").replace("  |  ", " · ")
                 _line(f"Bară trăgătoare ({short}): {r_br:.2f} lei (TVA inclus)", color=col_hi)
             else:
                 _line(f"Bară trăgătoare: {0.0:.2f} lei (TVA inclus)", color="#757575")
+
+        acc_cart = getattr(self, "_usi_exterior_acc_cart", None) or []
+        ro_acc = bool(getattr(self, "_win_oferta_readonly", False))
+        for i, it in enumerate(acc_cart):
+            disp = (it.get("display") or "").strip()
+            try:
+                pe = float(it.get("pret_eur") or 0)
+            except (TypeError, ValueError):
+                pe = 0.0
+            r_acc = self._usi_ext_eur_to_ron_tva(pe)
+            fr = ctk.CTkFrame(cart, fg_color="transparent")
+            fr.pack(fill="x", padx=4, pady=2)
+            ctk.CTkLabel(
+                fr,
+                text=f"Accesoriu ({disp}): {r_acc:.2f} lei (TVA inclus)",
+                font=font_line,
+                text_color=col_hi,
+                anchor="w",
+                justify="left",
+                wraplength=500,
+            ).pack(side="left", fill="x", expand=True)
+            if not ro_acc:
+                ctk.CTkButton(
+                    fr,
+                    text="×",
+                    width=28,
+                    height=24,
+                    font=("Segoe UI", 13),
+                    fg_color="#424242",
+                    hover_color="#616161",
+                    corner_radius=6,
+                    command=lambda idx=i: self._usi_exterior_acc_remove_from_cart(idx),
+                ).pack(side="right", padx=(4, 0))
 
         if lbl_tot is not None:
             lbl_tot.configure(text=f"TOTAL: {total_ron_tva:.2f} lei (TVA inclus)")
@@ -5180,6 +5490,8 @@ class AplicatieOfertare(ctk.CTk):
         w = getattr(self, "_usi_exterior_widgets", None)
         if not w:
             return
+        self._usi_exterior_purge_invalid_contraplaca_from_cart()
+        self._usi_exterior_refresh_acc_nume_for_toc()
         cb_m = w.get("cb_model")
         lab = (cb_m.get() or "").strip() if cb_m is not None else ""
         if lab.startswith("(") or lab == "Se încarcă…":
@@ -5231,7 +5543,23 @@ class AplicatieOfertare(ctk.CTk):
                 ):
                     bara_combo_display = f"{bc.upper()} · {bl.upper()} · {bd.upper()}"
                     bara_line_ok = True
-        total = round(pret_baza + pret_adaos + pret_bara, 2)
+        pret_feronerie = 0.0
+        feronerie_line_ok = False
+        feronerie_combo_display = ""
+        cb_kit = w.get("cb_kit")
+        cb_fd = w.get("cb_feron_decor")
+        kit_sel = (cb_kit.get() or "").strip() if cb_kit is not None else ""
+        if kit_sel and kit_sel != USI_EXTERIOR_KIT_NONE and cb_fd is not None:
+            dlab = (cb_fd.get() or "").strip()
+            if dlab and dlab != USI_EXTERIOR_FERON_DECOR_NONE:
+                row_f = (getattr(self, "_usi_feron_decor_map", {}) or {}).get(dlab)
+                if row_f is not None:
+                    pret_feronerie = float(row_f.get("pret_eur_fara_tva") or 0)
+                    if pret_feronerie > 0:
+                        feronerie_line_ok = True
+                        feronerie_combo_display = f"{kit_sel} · {toc_lbl} · {dlab}"
+        acc_extra = sum(float(x.get("pret_eur") or 0) for x in getattr(self, "_usi_exterior_acc_cart", []) or [])
+        total = round(pret_baza + pret_adaos + pret_bara + pret_feronerie + acc_extra, 2)
 
         dims = self._usi_ext_collect_dims(row_m)
         lines: list[str] = []
@@ -5285,6 +5613,9 @@ class AplicatieOfertare(ctk.CTk):
             pret_baza=pret_baza,
             pret_adaos=pret_adaos,
             pret_bara=pret_bara,
+            pret_feronerie=pret_feronerie,
+            feronerie_line_ok=feronerie_line_ok,
+            feronerie_combo_display=feronerie_combo_display,
             total_eur=total,
             total_ron_tva=total_ron_tva,
             bara_line_ok=bara_line_ok,
@@ -5292,37 +5623,289 @@ class AplicatieOfertare(ctk.CTk):
         )
         w["lbl_dims"].configure(text="Dimensiuni calculate:\n" + "\n".join(lines))
 
+    @staticmethod
+    def _usi_acc_decor_raw_from_combo_label(label: str) -> str:
+        """Mapare etichetă combobox decor → valoare goală în BD (decor lipsă)."""
+        s = (label or "").strip()
+        if not s or s == USI_EXTERIOR_ACC_DECOR_NONE:
+            return ""
+        if s == USI_EXTERIOR_ACC_DECOR_EMPTY_LABEL:
+            return ""
+        return s
+
+    def _usi_acc_allowed_models_for_current_toc(self) -> list[str]:
+        """Modele accesorii vizibile pentru tipul toc curent (Contraplaca doar pe THERMO HOT 78/88)."""
+        toc = (getattr(self, "_usi_exterior_toc_selected", None) or USI_EXTERIOR_TOC_LABELS[0] or "").strip()
+        rows = getattr(self, "_usi_exterior_acc_rows", []) or []
+        names: list[str] = []
+        for r in rows:
+            m = str(r.get("model") or "").strip()
+            if not m:
+                continue
+            if _usi_acc_is_contraplaca_zi_noapte(m) and toc not in USI_EXTERIOR_TOC_CONTRAPLACA_ALLOWED:
+                continue
+            names.append(m)
+        return sorted(set(names), key=str.casefold)
+
+    def _usi_exterior_purge_invalid_contraplaca_from_cart(self) -> None:
+        """Elimină din coș contraplaca dacă toc-ul nu mai este THERMO HOT 78/88."""
+        toc = (getattr(self, "_usi_exterior_toc_selected", None) or USI_EXTERIOR_TOC_LABELS[0] or "").strip()
+        if toc in USI_EXTERIOR_TOC_CONTRAPLACA_ALLOWED:
+            return
+        cart = getattr(self, "_usi_exterior_acc_cart", None)
+        if not cart:
+            return
+        new = [it for it in cart if not _usi_acc_is_contraplaca_zi_noapte(str(it.get("model") or ""))]
+        if len(new) != len(cart):
+            self._usi_exterior_acc_cart = new
+
+    def _usi_exterior_refresh_acc_nume_for_toc(self) -> None:
+        """Actualizează lista «Accesoriu» după schimbarea tipului toc (vizibilitate Contraplaca)."""
+        w = getattr(self, "_usi_exterior_widgets", None) or {}
+        cb_n = w.get("cb_acc_nume")
+        if cb_n is None:
+            return
+        ro = bool(getattr(self, "_win_oferta_readonly", False))
+        models = self._usi_acc_allowed_models_for_current_toc()
+        vals_n = [USI_EXTERIOR_ACC_NUME_NONE] + models
+        cur = (cb_n.get() or "").strip()
+        cb_n.configure(values=vals_n, state="normal" if (models and not ro) else "disabled")
+        if cur and cur != USI_EXTERIOR_ACC_NUME_NONE and cur not in models:
+            cb_n.set(USI_EXTERIOR_ACC_NUME_NONE)
+            self._on_usi_exterior_acc_nume_change()
+        elif cur in models:
+            cb_n.set(cur)
+        else:
+            cb_n.set(USI_EXTERIOR_ACC_NUME_NONE)
+
+    def _usi_exterior_acc_set_decor_visible(self, show: bool) -> None:
+        """Contraplaca nu are decor — ascundem secțiunea Decor."""
+        w = getattr(self, "_usi_exterior_widgets", None) or {}
+        fr = w.get("f_acc_decor")
+        lp = w.get("lbl_acc_pret")
+        if fr is None:
+            return
+        if show:
+            if not fr.winfo_ismapped():
+                fr.pack(fill="x", padx=0, pady=(0, 4), before=lp)
+        else:
+            fr.pack_forget()
+
+    def _usi_exterior_setup_accesorii_combos(self, acc_rows: list[dict]) -> None:
+        """Încarcă catalogul «Accesorii ușă exterior» în combobox-uri (nume → decor)."""
+        self._usi_exterior_acc_rows = list(acc_rows or [])
+        self._usi_exterior_acc_cart = []
+        w = getattr(self, "_usi_exterior_widgets", None)
+        if not w:
+            return
+        ro = bool(getattr(self, "_win_oferta_readonly", False))
+        cb_n = w.get("cb_acc_nume")
+        cb_d = w.get("cb_acc_decor")
+        btn = w.get("btn_acc_add")
+        lbl = w.get("lbl_acc_pret")
+        if cb_n is None or cb_d is None:
+            return
+        models = self._usi_acc_allowed_models_for_current_toc()
+        vals_n = [USI_EXTERIOR_ACC_NUME_NONE] + models
+        cb_n.configure(values=vals_n, state="normal" if (models and not ro) else "disabled")
+        cb_n.set(USI_EXTERIOR_ACC_NUME_NONE)
+        cb_d.configure(values=[USI_EXTERIOR_ACC_DECOR_NONE], state="disabled")
+        cb_d.set(USI_EXTERIOR_ACC_DECOR_NONE)
+        if btn is not None:
+            btn.configure(state="normal" if (models and not ro) else "disabled")
+        if lbl is not None:
+            lbl.configure(text="Preț EUR (catalog, fără TVA): —")
+        self._on_usi_exterior_selection_change()
+
+    def _on_usi_exterior_acc_nume_change(self, _event=None) -> None:
+        w = getattr(self, "_usi_exterior_widgets", None) or {}
+        cb_n = w.get("cb_acc_nume")
+        cb_d = w.get("cb_acc_decor")
+        if cb_n is None or cb_d is None:
+            return
+        ro = bool(getattr(self, "_win_oferta_readonly", False))
+        nom = (cb_n.get() or "").strip()
+        rows = getattr(self, "_usi_exterior_acc_rows", []) or []
+        if not nom or nom == USI_EXTERIOR_ACC_NUME_NONE:
+            self._usi_exterior_acc_set_decor_visible(True)
+            cb_d.configure(values=[USI_EXTERIOR_ACC_DECOR_NONE], state="disabled")
+            cb_d.set(USI_EXTERIOR_ACC_DECOR_NONE)
+            self._usi_exterior_acc_update_preview()
+            return
+        if _usi_acc_is_contraplaca_zi_noapte(nom):
+            self._usi_exterior_acc_set_decor_visible(False)
+            self._usi_exterior_acc_update_preview()
+            return
+        self._usi_exterior_acc_set_decor_visible(True)
+        decs: list[str] = []
+        for r in rows:
+            if str(r.get("model") or "").strip() != nom:
+                continue
+            decs.append(str(r.get("decor") or "").strip())
+        seen: set[str] = set()
+        unique: list[str] = []
+        for d in decs:
+            if d in seen:
+                continue
+            seen.add(d)
+            unique.append(d)
+        labels = [USI_EXTERIOR_ACC_DECOR_NONE]
+        for d in sorted(unique, key=str.casefold):
+            labels.append(USI_EXTERIOR_ACC_DECOR_EMPTY_LABEL if not d else d)
+        cb_d.configure(values=labels, state="normal" if not ro else "disabled")
+        if len(labels) == 2:
+            cb_d.set(labels[1])
+        else:
+            cb_d.set(labels[0])
+        self._usi_exterior_acc_update_preview()
+
+    def _usi_exterior_acc_update_preview(self) -> None:
+        w = getattr(self, "_usi_exterior_widgets", None) or {}
+        lbl = w.get("lbl_acc_pret")
+        cb_n = w.get("cb_acc_nume")
+        cb_d = w.get("cb_acc_decor")
+        if lbl is None or cb_n is None or cb_d is None:
+            return
+        nom = (cb_n.get() or "").strip()
+        dec_lbl = (cb_d.get() or "").strip()
+        if not nom or nom == USI_EXTERIOR_ACC_NUME_NONE:
+            lbl.configure(text="Preț EUR (catalog, fără TVA): —")
+            return
+        if _usi_acc_is_contraplaca_zi_noapte(nom):
+            row_c = None
+            for r in getattr(self, "_usi_exterior_acc_rows", []) or []:
+                if str(r.get("model") or "").strip() != nom:
+                    continue
+                if str(r.get("decor") or "").strip() != "":
+                    continue
+                row_c = r
+                break
+            if row_c is None:
+                lbl.configure(text="Preț EUR (catalog, fără TVA): —")
+                return
+            try:
+                pret = float(row_c.get("pret") or 0)
+            except (TypeError, ValueError):
+                pret = 0.0
+            lbl.configure(text=f"Preț EUR (catalog, fără TVA): {pret:.2f} €")
+            return
+        if not dec_lbl or dec_lbl == USI_EXTERIOR_ACC_DECOR_NONE:
+            lbl.configure(text="Preț EUR (catalog, fără TVA): —")
+            return
+        raw = self._usi_acc_decor_raw_from_combo_label(dec_lbl)
+        row = None
+        for r in getattr(self, "_usi_exterior_acc_rows", []) or []:
+            if str(r.get("model") or "").strip() != nom:
+                continue
+            if str(r.get("decor") or "").strip() != raw:
+                continue
+            row = r
+            break
+        if row is None:
+            lbl.configure(text="Preț EUR (catalog, fără TVA): —")
+            return
+        try:
+            pret = float(row.get("pret") or 0)
+        except (TypeError, ValueError):
+            pret = 0.0
+        lbl.configure(text=f"Preț EUR (catalog, fără TVA): {pret:.2f} €")
+
+    def _usi_exterior_acc_add_to_cart(self) -> None:
+        if getattr(self, "_win_oferta_readonly", False):
+            return
+        w = getattr(self, "_usi_exterior_widgets", None) or {}
+        cb_n = w.get("cb_acc_nume")
+        cb_d = w.get("cb_acc_decor")
+        if cb_n is None or cb_d is None:
+            return
+        nom = (cb_n.get() or "").strip()
+        dec_lbl = (cb_d.get() or "").strip()
+        toc_lbl = (getattr(self, "_usi_exterior_toc_selected", USI_EXTERIOR_TOC_LABELS[0]) or USI_EXTERIOR_TOC_LABELS[0]).strip()
+        if not nom or nom == USI_EXTERIOR_ACC_NUME_NONE:
+            self.afiseaza_mesaj("Atenție", "Selectează un accesoriu din listă.", "#7a1a1a")
+            return
+        if _usi_acc_is_contraplaca_zi_noapte(nom):
+            if toc_lbl not in USI_EXTERIOR_TOC_CONTRAPLACA_ALLOWED:
+                self.afiseaza_mesaj(
+                    "Atenție",
+                    "Contraplaca Zi/Noapte se poate adăuga doar pentru tip toc THERMO HOT 78 sau THERMO HOT 88.",
+                    "#7a1a1a",
+                )
+                return
+            raw = ""
+            row = None
+            for r in getattr(self, "_usi_exterior_acc_rows", []) or []:
+                if str(r.get("model") or "").strip() != nom:
+                    continue
+                if str(r.get("decor") or "").strip() != "":
+                    continue
+                row = r
+                break
+            if row is None:
+                self.afiseaza_mesaj("Atenție", "Articolul nu este în catalog.", "#7a1a1a")
+                return
+            try:
+                pret = float(row.get("pret") or 0)
+            except (TypeError, ValueError):
+                pret = 0.0
+            display = nom
+            self._usi_exterior_acc_cart.append(
+                {"model": nom, "decor": raw, "pret_eur": pret, "display": display, "qty": 1}
+            )
+            self._on_usi_exterior_selection_change()
+            return
+        if not dec_lbl or dec_lbl == USI_EXTERIOR_ACC_DECOR_NONE:
+            self.afiseaza_mesaj("Atenție", "Selectează decorul.", "#7a1a1a")
+            return
+        raw = self._usi_acc_decor_raw_from_combo_label(dec_lbl)
+        row = None
+        for r in getattr(self, "_usi_exterior_acc_rows", []) or []:
+            if str(r.get("model") or "").strip() != nom:
+                continue
+            if str(r.get("decor") or "").strip() != raw:
+                continue
+            row = r
+            break
+        if row is None:
+            self.afiseaza_mesaj("Atenție", "Combinația accesoriu / decor nu este în catalog.", "#7a1a1a")
+            return
+        try:
+            pret = float(row.get("pret") or 0)
+        except (TypeError, ValueError):
+            pret = 0.0
+        display = f"{nom} ({raw})" if raw else nom
+        self._usi_exterior_acc_cart.append(
+            {"model": nom, "decor": raw, "pret_eur": pret, "display": display, "qty": 1}
+        )
+        self._on_usi_exterior_selection_change()
+
+    def _usi_exterior_acc_remove_from_cart(self, idx: int) -> None:
+        cart = getattr(self, "_usi_exterior_acc_cart", None)
+        if not cart or idx < 0 or idx >= len(cart):
+            return
+        del cart[idx]
+        self._on_usi_exterior_selection_change()
+
     def _usi_exterior_collect_accesorii_cos_items(self, w: dict) -> list[dict]:
-        """Checkbox-uri bifate din secțiunea Accesorii: text + `_usi_exterior_pret_eur` (EUR fără TVA)."""
-        scroll = w.get("scroll_accesorii")
-        if scroll is None:
-            return []
+        """Liniile din coșul de configurare accesorii (EUR fără TVA)."""
         out: list[dict] = []
-        for ch in scroll.winfo_children():
-            if not isinstance(ch, ctk.CTkCheckBox):
+        for it in getattr(self, "_usi_exterior_acc_cart", None) or []:
+            nume = (it.get("display") or "").strip()
+            if not nume:
                 continue
             try:
-                on = bool(ch.get())
-            except Exception:
-                on = False
-            if not on:
-                continue
-            label = (ch.cget("text") or "").strip()
-            if not label:
-                continue
-            try:
-                pret = float(getattr(ch, "_usi_exterior_pret_eur", 0) or 0)
+                pret = float(it.get("pret_eur") or 0)
             except (TypeError, ValueError):
                 pret = 0.0
             if pret < 0:
                 continue
             try:
-                q = int(getattr(ch, "_usi_exterior_qty", 1) or 1)
+                q = int(it.get("qty") or 1)
             except (TypeError, ValueError):
                 q = 1
             if q < 1:
                 q = 1
-            out.append({"nume": label, "pret_eur": pret, "qty": q})
+            out.append({"nume": nume, "pret_eur": pret, "qty": q})
         return out
 
     def _adauga_usi_exterior_in_cos(self) -> None:
@@ -5386,7 +5969,26 @@ class AplicatieOfertare(ctk.CTk):
                 and bd != USI_EXTERIOR_BARA_PLACEHOLDER
             ):
                 bara_combo = f"{bc} · {bl} · {bd}"
-        total = round(pret_baza + pret_adaos + pret_bara, 2)
+        pret_feronerie = 0.0
+        feronerie_combo_display = ""
+        cb_kit = w.get("cb_kit")
+        cb_fd = w.get("cb_feron_decor")
+        kit_sel = (cb_kit.get() or "").strip() if cb_kit is not None else ""
+        if kit_sel and kit_sel != USI_EXTERIOR_KIT_NONE:
+            if cb_fd is None:
+                self.afiseaza_mesaj("Atenție", "Configurator incomplet (kit feronerie).", "#7a1a1a")
+                return
+            dlab = (cb_fd.get() or "").strip()
+            if not dlab or dlab == USI_EXTERIOR_FERON_DECOR_NONE:
+                self.afiseaza_mesaj("Atenție", "Selectează decor feronerie sau «Fără feronerie» la kit.", "#7a1a1a")
+                return
+            row_f = (getattr(self, "_usi_feron_decor_map", {}) or {}).get(dlab)
+            if row_f is None:
+                self.afiseaza_mesaj("Atenție", "Combinația kit / toc / decor feronerie nu este validă.", "#7a1a1a")
+                return
+            pret_feronerie = float(row_f.get("pret_eur_fara_tva") or 0)
+            feronerie_combo_display = f"{kit_sel} · {toc_lbl} · {dlab}"
+        total = round(pret_baza + pret_adaos + pret_bara + pret_feronerie, 2)
         if total <= 0:
             self.afiseaza_mesaj("Atenție", "Prețul calculat este 0. Verifică datele din tabelul `usi_exterioare`.", "#7a1a1a")
             return
@@ -5395,6 +5997,12 @@ class AplicatieOfertare(ctk.CTk):
         if pret_usa_toc <= 0:
             self.afiseaza_mesaj("Atenție", "Prețul ușă + toc este 0. Verifică datele din tabelul `usi_exterioare`.", "#7a1a1a")
             return
+        for it in getattr(self, "_usi_exterior_acc_cart", []) or []:
+            if _usi_acc_is_contraplaca_zi_noapte(str(it.get("model") or "")) and toc_lbl not in USI_EXTERIOR_TOC_CONTRAPLACA_ALLOWED:
+                self.afiseaza_mesaj(
+                    "Atenție",
+                    "Contraplaca Zi/Noapte se poate oferta doar cu tip toc THERMO HOT 78 sau THERMO HOT 88.", "#7a1a1a")
+                return
         acc_payloads = self._usi_exterior_collect_accesorii_cos_items(w)
         gid = uuid.uuid4().hex[:16]
         nume_usa_parts = [f"USA EXTERIOR {lab.upper()}", f"TOC {toc_lbl.upper()}"]
@@ -5418,6 +6026,19 @@ class AplicatieOfertare(ctk.CTk):
                 "usi_exterior_bara_pret_eur": 0,
             }
         )
+        if pret_feronerie > 0 and feronerie_combo_display:
+            self.cos_cumparaturi.append(
+                {
+                    "nume": f"KIT FERONERIE — {feronerie_combo_display.upper()}",
+                    "pret_eur": pret_feronerie,
+                    "qty": 1,
+                    "tip": "accesorii",
+                    "furnizor": "Exterior",
+                    "usi_exterior_feronerie_line": True,
+                    "usi_exterior_group_id": gid,
+                    "usi_exterior_model": lab,
+                }
+            )
         if pret_bara > 0 and bara_combo:
             self.cos_cumparaturi.append(
                 {

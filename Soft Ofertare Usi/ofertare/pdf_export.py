@@ -22,14 +22,13 @@ _SERVICII_FARA_DISCOUNT = frozenset({
 def discount_price_factor(discount_proc: int) -> float:
     """
     Factor aplicat pe prețul supus discountului.
-    Pentru 10%: împărțire la 1.10 (echivalent net față de scăderea clasică de 10%).
+    Regulă unică: împărțire la (1 + p/100) — ex. 10% → /1.10, 20% → /1.20.
+    (Nu se folosește scăderea clasică 1 − p/100, care ar da alt rezultat.)
     """
     d = int(discount_proc) if discount_proc else 0
     if d <= 0:
         return 1.0
-    if d == 10:
-        return 1.0 / 1.10
-    return 1.0 - d / 100.0
+    return 1.0 / (1.0 + d / 100.0)
 
 
 def _is_item_fara_discount(item: dict[str, Any]) -> bool:
@@ -61,7 +60,12 @@ def _item_afisare_majuscule_cos_pdf(item: dict[str, Any]) -> bool:
         return True
     if str(item.get("furnizor") or "").strip() != "Exterior":
         return False
-    if item.get("usi_exterior_kit") or item.get("usi_exterior_bara_line") or item.get("usi_exterior_accesoriu"):
+    if (
+        item.get("usi_exterior_kit")
+        or item.get("usi_exterior_bara_line")
+        or item.get("usi_exterior_feronerie_line")
+        or item.get("usi_exterior_accesoriu")
+    ):
         return True
     return False
 
